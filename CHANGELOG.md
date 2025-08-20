@@ -1,5 +1,15 @@
 # Changelog
 
+## Version 0.1.3
+
+### Fixed
+- `ad87b17` - Bugfix: wrong config file being copied
+- `c2bc6cf` - Fix cardano cli command
+
+### Changed
+- `6d10640` - Make 10.5.1 as default node version
+- `8387bd1` - use exec to start cardano-node instead of subprocess
+
 ## Version 0.1.2
 
 ### Fixed
