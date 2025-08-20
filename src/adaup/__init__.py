@@ -22,7 +22,7 @@ def main():
     )
     parser_node.add_argument(
         "--version",
-        default="10.4.1",
+        default="10.5.1",
         help="Cardano node version to use"
     )
 
