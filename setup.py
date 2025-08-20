@@ -3,7 +3,7 @@ import os
 
 setup(
     name='adaup',
-    version='0.1.3',
+    version='0.1.4',
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
     install_requires=[

@@ -56,4 +56,4 @@ def start(node_version="10.4.1", network="mainnet"):
     ]
     [print(x) for x in cmd]
     # Replace the current process with the Cardano node command
-    exec(cmd)
+    os.execv(cmd[0], cmd)
