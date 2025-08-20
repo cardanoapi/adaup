@@ -69,7 +69,7 @@ def download_network_configs(network, config_dir):
             alternative_paths = [
                 f"/etc/cardano/{network}/{filename}",
                 f"/usr/share/doc/cardano-node-{network}/{filename}",
-                "/home/sudip/.cardano/preview/configuration/config.json"
+                f"/home/sudip/.cardano/preview/configuration/{filename}"
             ]
 
             found_alternative = False
