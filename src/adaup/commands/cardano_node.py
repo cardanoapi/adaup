@@ -55,5 +55,5 @@ def start(node_version="10.4.1", network="mainnet"):
         "--port", "3001"
     ]
     [print(x) for x in cmd]
-    # Execute the command using executor
-    executor(cmd, show_command=True, throw_error=True, stream_output=True)
+    # Replace the current process with the Cardano node command
+    exec(cmd)
