@@ -7,6 +7,7 @@ import os
 import sys
 from typing import List, Optional
 import json
+from adaup.download.exec import exec as os_exec
 
 HOME=os.environ.get("HOME","/root")
 
@@ -623,3 +624,24 @@ def check_if_file_exists(*files,raise_error=True):
             print(" -",file)
         print("Backup and remove them to generate new keys")
         exit(1)
+
+def run(cli_args: List[str]):
+    """
+    Run cardano-cli commands.
+
+    Args:
+        cli_args (List[str]): Arguments to pass to cardano-cli.
+    """
+    cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
+    node_bin_dir = os.path.join(cardano_home, "bin")
+    cardano_cli_path = os.path.join(node_bin_dir, "cardano-cli")
+    
+    if not os.path.isfile(cardano_cli_path) or not os.access(cardano_cli_path, os.X_OK):
+        print(f"Error: cardano-cli executable not found at {cardano_cli_path}")
+        sys.exit(1)
+
+    # Construct the full command list by prepending cardano_cli_path to all cli_args
+    full_cmd = [cardano_cli_path] + cli_args
+
+    # Execute the command using os_exec
+    os_exec(full_cmd)

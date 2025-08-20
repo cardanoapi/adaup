@@ -103,7 +103,6 @@ def main():
 
     # CLI command
     parser_cli = subparsers.add_parser("cli", help="Run cardano-cli")
-    parser_cli.add_argument("network", help="The network to run the CLI on")
     parser_cli.add_argument("cli_args", nargs=argparse.REMAINDER, help="Arguments to pass to cardano-cli")
 
     args = parser.parse_args()
@@ -113,7 +112,7 @@ def main():
         start(args.version, args.network)
     elif args.command == "cli":
         from .commands.cardano_cli import run
-        run(args.network, args.cli_args)
+        run(args.cli_args)
     elif args.command == "mithril":
         from .download.mithril import download_and_setup_mithril, run_mithril_client
         cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
