@@ -5,18 +5,190 @@ import json
 import argparse
 import sys
 
-from adaup.commands.cardano_cli import CardanoCLI
+from adaup.commands.cardano_cli import CardanoCLI, WalletStore
 from adaup.download.hydra import (
-    generate_protocol_parameters,
-    create_hydra_credentials,
     fetch_network_json,
-    download_and_setup_hydra,
-    generate_and_save_hydra_run_script
+    download_and_setup_hydra
 )
-from adaup.download.exec import exec
+from adaup.download.exec import executor, exec
 
 HOME = os.environ.get("HOME", "/root")
 HYDRA_VERSION="0.22.4"
+
+def create_hydra_credentials(cli:CardanoCLI,credentials_dir):
+    """
+    Create the necessary credentials for a Hydra node.
+
+    Args:
+        credentials_dir (str): The directory where the credentials will be stored.
+    """
+    print(f"Creating hydra credentials in {credentials_dir}...")
+
+    cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
+    cardano_cli_path = os.path.join(cardano_home, "bin", "cardano-cli")
+
+    if not os.path.isfile(cardano_cli_path) or not os.access(cardano_cli_path, os.X_OK):
+        print(f"Error: cardano-cli executable not found at {cardano_cli_path}")
+        sys.exit(1)
+
+    store = WalletStore(credentials_dir)
+    if store.gen_enterprise_wallet(cli,"node",skip_if_present=True) ==False:
+        print("[Hydra] Node keys are already present")
+
+    if store.gen_enterprise_wallet(cli,"funds",skip_if_present=True) == False:
+        print("[Hydra] funds keys are already present")
+   
+    hydr_output_file=os.path.join(credentials_dir, "hydra")
+    files=[hydr_output_file+".sk",hydr_output_file+".vk"]
+    
+    present =False
+    for file in files:
+        if  os.path.isfile(file) and os.access(file, os.X_OK):
+            present=True
+    if present:
+        print("[Hydra] Node keys are already present")
+        return
+        
+    hydra_node_path = os.path.join(cardano_home, "bin", "hydra-node")
+    if not os.path.isfile(hydra_node_path) or not os.access(hydra_node_path, os.X_OK):
+        print(f"Error: hydra-node executable not found at {hydra_node_path}")
+        sys.exit(1)
+
+    executor([
+        hydra_node_path, "gen-hydra-key",
+        "--output-file", hydr_output_file
+    ], show_command=True, throw_error=True)
+    print("Hydra credentials created successfully.")
+
+def generate_protocol_parameters(cli:CardanoCLI,filePath:str):
+    """
+    Generate protocol parameters for the hydra node.
+
+    Args:
+        node_bin_dir (str): The directory where cardano-cli is located.
+
+    Returns:
+        str: Path to the generated protocol parameters file.
+    """
+    print("Generating ledger protocol parameters...")
+
+    result = cli.cardano_cli("query","protocol-parameters",[],include_network=True,include_socket=True)
+    params = json.loads(result)
+
+    params['txFeeFixed'] = 0
+    params['txFeePerByte'] = 0
+    params['executionUnitPrices']['priceMemory'] = 0
+    params['executionUnitPrices']['priceSteps'] = 0
+
+    with open(filePath, 'w') as f:
+        json.dump(params, f, indent=2)
+    return filePath
+
+def generate_and_save_hydra_run_script(
+        node_index: int,
+        network: str,
+        cardano_home: str,
+        node_bin_dir: str,
+        tx_id: str,
+        testnet_magic: int,
+        hydra_node_path: str,
+        node_configs: list = None
+    ):
+    """
+    Generates the run.sh script for a specific Hydra node.
+
+    Args:
+        node_index (int): The index of the current hydra node.
+        network (str): The Cardano network.
+        cardano_home (str): Path to the .cardano home directory.
+        node_bin_dir (str): Path to the directory containing hydra-node executable.
+        tx_id (str): Hydra scripts transaction ID.
+        testnet_magic (int): Testnet magic number.
+        hydra_node_path (str): Path to the hydra-node executable.
+        node_configs (list): A list of dictionaries, where each dictionary contains
+                             configuration details (including paths to verification keys)
+                             for all hydra nodes in the network. Used for peer discovery.
+    """
+    print(f"Generating run.sh script for hydra node {node_index} on network {network}...")
+
+    hydra_dir = os.path.join(cardano_home, network, f"hydra-{node_index}")
+    credentials_dir = os.path.join(hydra_dir, "credentials")
+    data_dir = os.path.join(hydra_dir, "data")
+
+    os.makedirs(credentials_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
+
+    cardano_signing_key = os.path.join(credentials_dir, "node.sk")
+    hydra_signing_key = os.path.join(credentials_dir, "hydra.sk")
+    protocol_params_path = os.path.join(credentials_dir, "protocol-params.json")
+
+    if not os.path.exists(cardano_signing_key):
+        print(f"Error: Cardano signing key not found at {cardano_signing_key}")
+        return False
+    if not os.path.exists(hydra_signing_key):
+        print(f"Error: Hydra signing key not found at {hydra_signing_key}")
+        return False
+    if not os.path.exists(protocol_params_path):
+        print(f"Error: Protocol parameters not found at {protocol_params_path}")
+        return False
+
+    run_command = [
+        hydra_node_path,
+        "--node-id", f"node-{network}-{node_index}",
+        "--persistence-dir", data_dir,
+        "--cardano-signing-key", cardano_signing_key,
+        "--hydra-signing-key", hydra_signing_key,
+        "--hydra-scripts-tx-id", tx_id,
+        "--ledger-protocol-parameters", protocol_params_path,
+        "--testnet-magic", str(testnet_magic),
+        "--node-socket", os.path.join(cardano_home, network, "node.socket"),
+        "--api-port", str(4001 + node_index),
+        "--listen", f"127.0.0.1:{5001 + node_index}",
+        "--api-host", "0.0.0.0",
+    ]
+
+    peers = []
+    if node_configs:
+        for other_config in node_configs:
+            if other_config['index'] != node_index:
+                peer_vk_path = other_config['cardano_verification_key']
+                hydra_vk_path = other_config['hydra_verification_key']
+                if os.path.exists(peer_vk_path) and os.path.exists(hydra_vk_path):
+                    peers.append(f"--peer=127.0.0.1:{5001 + other_config['index']}")
+                    peers.append(f"--cardano-verification-key={peer_vk_path}")
+                    peers.append(f"--hydra-verification-key={hydra_vk_path}")
+                else:
+                    print(f"Warning: Missing keys for potential peer {other_config['index']}. Skipping peer configuration for node {node_index}.")
+    run_command.extend(peers)
+
+    formatted_command_parts = []
+    cmd_idx = 1
+    while cmd_idx < len(run_command):
+        part = str(run_command[cmd_idx])
+        if part.startswith("--"):
+            if cmd_idx + 1 < len(run_command) and not str(run_command[cmd_idx+1]).startswith("--"):
+                formatted_command_parts.append(f"  {part} {str(run_command[cmd_idx+1])}")
+                cmd_idx += 2
+            else:
+                formatted_command_parts.append(f"  {part}")
+                cmd_idx += 1
+        else:
+            formatted_command_parts.append(f"  {part}")
+            cmd_idx += 1
+    
+    run_script_content = f"#!/bin/bash\n\n{run_command[0]}"
+    if len(formatted_command_parts) > 0:
+        run_script_content += " \\\n" + " \\\n".join(formatted_command_parts)
+    run_script_content += "\n"
+    
+    run_script_path = os.path.join(hydra_dir, "run.sh")
+
+    with open(run_script_path, 'w') as f:
+        f.write(run_script_content)
+    os.chmod(run_script_path, 0o755)
+
+    print(f"Created run.sh for node {node_index} at {run_script_path}")
+    return True
 
 def reset_hydra_data(args):
     """
