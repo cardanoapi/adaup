@@ -1,5 +1,17 @@
 # Changelog
 
+
+
+## Version 0.1.5
+
+### Added
+- Add `reset` command to hydra to reset head and restart hydra without reseting keys.
+
+## Version 0.1.4
+
+### Fixed
+- `958d9af` - Fix exec system call for cardano-node
+
 ## Version 0.1.3
 
 ### Fixed
@@ -13,7 +25,7 @@
 ## Version 0.1.2
 
 ### Fixed
-- `f6924a1` - Fix release build
+- `50c2d2c` - Fix release build
 
 ## Version 0.1.1
 

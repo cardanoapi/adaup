@@ -262,7 +262,7 @@ def run_hydra_node(
             sys.exit(1)
 
         # Get network information
-        node_version="0.22.0"
+        node_version="0.22.4"
         networks = fetch_network_json()
         
         # this list is comma separated string
