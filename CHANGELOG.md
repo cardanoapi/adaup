@@ -1,8 +1,11 @@
 # Changelog
 
-
-
 ## Version 0.1.5
+
+### Changed
+- Moved Hydra management code from `src/adaup/__init__.py` to `src/adaup/commands/hydra.py`.
+- Refactored Hydra-related functions into individual, more focused functions within `src/adaup/commands/hydra.py`.
+- Removed non-download related functions from `src/adaup/download/hydra.py`.
 
 ### Added
 - Add `reset` command to hydra to reset head and restart hydra without reseting keys.
