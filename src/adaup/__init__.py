@@ -5,7 +5,14 @@ import sys
 import argparse
 
 from .commands.cardano_cli import CardanoCLI
-from .download.exec import executor,exec
+from .download.exec import executor, exec
+from .commands.hydra import (
+    run_hydra_tui,
+    bootstrap_hydra_nodes,
+    run_hydra_node,
+    prune_hydra_directories,
+    reset_hydra_data
+)
 
 def main():
     parser = argparse.ArgumentParser(description="Cardano node, CLI and module management")
@@ -34,34 +41,34 @@ def main():
         help="Mithril client version to use"
     )
 
-    # Hydra command with subcommands for node and tui
+    # Hydra command
     parser_hydra = subparsers.add_parser("hydra", help="Manage Cardano hydra nodes")
     hydra_subparsers = parser_hydra.add_subparsers(dest="subcommand", help="Hydra subcommands")
 
     # Node subcommand
-    parser_node = hydra_subparsers.add_parser("node", help="Start a hydra node")
-    parser_node.add_argument(
+    parser_hydra_node = hydra_subparsers.add_parser("node", help="Start a hydra node")
+    parser_hydra_node.add_argument(
         "network",
         nargs="?",
         default="mainnet",
         help="The network to run the hydra node on (default: mainnet)"
     )
-    parser_node.add_argument(
+    parser_hydra_node.add_argument(
         "index",
         nargs="?",
         default=0,
         type=int,
         help="The index of the hydra node to run"
     )
-    parser_node.add_argument(
+    parser_hydra_node.add_argument(
         "--version",
         default="0.22.4",  # Example default version
         help="Hydra client version to use"
     )
 
     # TUI subcommand
-    parser_tui = hydra_subparsers.add_parser("tui", help="Open the hydra-tui interface")
-    parser_tui.add_argument(
+    parser_hydra_tui = hydra_subparsers.add_parser("tui", help="Open the hydra-tui interface")
+    parser_hydra_tui.add_argument(
         "index",
         nargs="?",
         default=0,
@@ -70,14 +77,14 @@ def main():
     )
 
     # Bootstrap subcommand
-    parser_bootstrap = hydra_subparsers.add_parser("bootstrap", help="Generate required folders and credentials for hydra nodes")
-    parser_bootstrap.add_argument(
+    parser_hydra_bootstrap = hydra_subparsers.add_parser("bootstrap", help="Generate required folders and credentials for hydra nodes")
+    parser_hydra_bootstrap.add_argument(
         "network",
         nargs="?",
         default="mainnet",
         help="The network for which to generate hydra node credentials (default: mainnet)"
     )
-    parser_bootstrap.add_argument(
+    parser_hydra_bootstrap.add_argument(
         "no_of_nodes",
         type=int,
         default=1,
@@ -85,8 +92,8 @@ def main():
     )
 
     # Prune subcommand
-    parser_prune = hydra_subparsers.add_parser("prune", help="Remove all hydra-xxx directories for a given network")
-    parser_prune.add_argument(
+    parser_hydra_prune = hydra_subparsers.add_parser("prune", help="Remove all hydra-xxx directories for a given network")
+    parser_hydra_prune.add_argument(
         "network",
         nargs="?",
         default="mainnet",
@@ -94,8 +101,8 @@ def main():
     )
 
     # Reset subcommand
-    parser_reset = hydra_subparsers.add_parser("reset", help="Delete hydra data and re-query protocol parameters")
-    parser_reset.add_argument(
+    parser_hydra_reset = hydra_subparsers.add_parser("reset", help="Delete hydra data and re-query protocol parameters")
+    parser_hydra_reset.add_argument(
         "network",
         nargs="?",
         default="mainnet",
@@ -134,242 +141,19 @@ def main():
             os.makedirs(node_bin_dir)
         download_and_setup_mithril(node_bin_dir)
         run_mithril_client(node_bin_dir)
-    elif known_args.command == "hydra" and known_args.subcommand == "tui":
-        # Handle the hydra tui command
-        cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
-        network = "preview"  # Default network for TUI since it's not specified in this subcommand
-        node_bin_dir = os.path.join(cardano_home, "bin")
-        credentials_dir = os.path.join(
-            cardano_home,
-            network,
-            f"hydra-{known_args.index}",
-            "credentials"
-        )
-
-        # Check if the hydra-tui executable exists
-        hydra_tui_path = os.path.join(node_bin_dir, "hydra-tui")
-        if not os.path.isfile(hydra_tui_path) or not os.access(hydra_tui_path, os.X_OK):
-            print(f"Error: 'hydra-tui' executable not found in {node_bin_dir}")
-            sys.exit(1)
-
-        # Find the funds signing key for this node
-        funds_key = None
-        for filename in os.listdir(credentials_dir):
-            if filename.endswith(".sk") and "funds" in filename:
-                funds_key = os.path.join(credentials_dir, filename)
-                break
-
-        if not funds_key or not os.path.isfile(funds_key):
-            print(f"Error: Could not find a 'funds' signing key in {credentials_dir}")
-            sys.exit(1)
-
-        # Execute hydra-tui with the appropriate signing key
-        cmd = [hydra_tui_path, "-k", funds_key]
-        exec(cmd)
-    elif known_args.command == "hydra" and known_args.subcommand == "bootstrap":
-        from .download.hydra import (
-            create_hydra_credentials,
-            generate_protocol_parameters,
-            fetch_network_json,
-            download_and_setup_hydra, # Ensure hydra-node is downloaded
-            generate_and_save_hydra_run_script # New function
-        )
-        cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
-        node_bin_dir = os.path.join(cardano_home, "bin")
-
-        # Ensure hydra-node is downloaded and executable
-        download_and_setup_hydra("0.22.4", node_bin_dir) # Use a default version for bootstrap
-
-        networks_data = fetch_network_json()
-        node_version = "0.22.4" # Assuming this is the version for hydra-node
-        tx_id_list = networks_data.get(known_args.network, {}).get(node_version, [])
-        if not isinstance(tx_id_list, str):
-            print(f"Error: Could not find transaction ID for {known_args.network}.{node_version} in the network configuration.")
-            sys.exit(1)
-        tx_id = tx_id_list
-        testnet_magic = 2 if known_args.network != "mainnet" else 0
-        hydra_node_path = os.path.join(node_bin_dir, "hydra-node")
-
-        node_configs = [] # To store paths to credentials for each node
-
-        # First pass: Generate all credentials and store their paths
-        for i in range(known_args.no_of_nodes):
-            print(f"Generating credentials for hydra node {i} on network {known_args.network}...")
-            cli = CardanoCLI(network=known_args.network,
-                             executable=os.path.join(node_bin_dir, "cardano-cli"),
-                             socket_path=os.path.join(cardano_home, known_args.network, "node.socket"))
-
-            hydra_dir = os.path.join(cardano_home, known_args.network, f"hydra-{i}")
-            credentials_dir = os.path.join(hydra_dir, "credentials")
-            data_dir = os.path.join(hydra_dir, "data")
-
-            os.makedirs(credentials_dir, exist_ok=True)
-            os.makedirs(data_dir, exist_ok=True)
-
-            create_hydra_credentials(cli, credentials_dir)
-            protocol_params_path = generate_protocol_parameters(cli, os.path.join(credentials_dir, "protocol-params.json"))
-
-            node_configs.append({
-                "index": i,
-                "hydra_dir": hydra_dir,
-                "credentials_dir": credentials_dir,
-                "data_dir": data_dir,
-                "cardano_signing_key": os.path.join(credentials_dir, "node.sk"),
-                "hydra_signing_key": os.path.join(credentials_dir, "hydra.sk"),
-                "cardano_verification_key": os.path.join(credentials_dir, "node.vk"),
-                "hydra_verification_key": os.path.join(credentials_dir, "hydra.vk"),
-                "protocol_params_path": protocol_params_path
-            })
-        print(f"Successfully generated credentials for {known_args.no_of_nodes} hydra nodes on network {known_args.network}.")
-
-        # Second pass: Generate run.sh scripts with full peer information
-        for config in node_configs:
-            generate_and_save_hydra_run_script(
-                node_index=config['index'],
-                network=known_args.network,
-                cardano_home=cardano_home,
-                node_bin_dir=node_bin_dir,
-                tx_id=tx_id,
-                testnet_magic=testnet_magic,
-                hydra_node_path=hydra_node_path,
-                node_configs=node_configs # Pass all configs for peer discovery
-            )
-
-        print(f"All run scripts generated with correct peer configurations for {known_args.no_of_nodes} hydra nodes on network {known_args.network}.")
-    elif known_args.command == "hydra" and known_args.subcommand == "node":
-        from .download.hydra import (
-            download_and_setup_hydra,
-            create_hydra_credentials,
-            generate_protocol_parameters,
-            fetch_network_json,
-            generate_and_save_hydra_run_script # New function
-        )
-        cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
-        node_bin_dir = os.path.join(cardano_home, "bin")
-        network = known_args.network if known_args.network else "preview"
-        node_index = known_args.index
-
-        hydra_dir = os.path.join(cardano_home, network, f"hydra-{node_index}")
-        run_script_path = os.path.join(hydra_dir, "run.sh")
-
-        if os.path.exists(run_script_path) and os.access(run_script_path, os.X_OK):
-            print(f"Executing existing run.sh for hydra node {node_index} on network {network}...")
-            exec([run_script_path])
+    elif known_args.command == "hydra":
+        if known_args.subcommand == "tui":
+            run_hydra_tui(known_args)
+        elif known_args.subcommand == "bootstrap":
+            bootstrap_hydra_nodes(known_args)
+        elif known_args.subcommand == "node":
+            run_hydra_node(known_args)
+        elif known_args.subcommand == "prune":
+            prune_hydra_directories(known_args)
+        elif known_args.subcommand == "reset":
+            reset_hydra_data(known_args)
         else:
-            print(f"run.sh not found or not executable for node {node_index}. Generating and executing...")
-            
-            # Ensure hydra-node is downloaded and executable
-            download_and_setup_hydra("0.22.4", node_bin_dir)
-
-            cli = CardanoCLI(network=network,
-                             executable=os.path.join(node_bin_dir, "cardano-cli"),
-                             socket_path=os.path.join(cardano_home, network, "node.socket"))
-
-            credentials_dir = os.path.join(hydra_dir, "credentials")
-            data_dir = os.path.join(hydra_dir, "data")
-
-            os.makedirs(credentials_dir, exist_ok=True)
-            os.makedirs(data_dir, exist_ok=True)
-
-            create_hydra_credentials(cli, credentials_dir)
-            generate_protocol_parameters(cli, os.path.join(credentials_dir, "protocol-params.json"))
-
-            networks_data = fetch_network_json()
-            node_version = "0.22.4"
-            tx_id_list = networks_data.get(network, {}).get(node_version, [])
-            if not isinstance(tx_id_list, str):
-                print(f"Error: Could not find transaction ID for {network}.{node_version} in the network configuration.")
-                sys.exit(1)
-            tx_id = tx_id_list
-            testnet_magic = 2 if network != "mainnet" else 0
-            hydra_node_path = os.path.join(node_bin_dir, "hydra-node")
-
-            # Gather existing node configs for peer discovery
-            existing_node_configs = []
-            network_dir = os.path.join(cardano_home, network)
-            if os.path.exists(network_dir):
-                for item in os.listdir(network_dir):
-                    if item.startswith("hydra-") and os.path.isdir(os.path.join(network_dir, item)):
-                        try:
-                            peer_index = int(item.split('-')[1])
-                            peer_hydra_dir = os.path.join(network_dir, item)
-                            peer_credentials_dir = os.path.join(peer_hydra_dir, "credentials")
-                            
-                            # Only add if credentials exist
-                            if os.path.exists(os.path.join(peer_credentials_dir, "node.vk")) and \
-                               os.path.exists(os.path.join(peer_credentials_dir, "hydra.vk")) and \
-                               os.path.exists(os.path.join(peer_credentials_dir, "node.sk")) and \
-                               os.path.exists(os.path.join(peer_credentials_dir, "hydra.sk")) and \
-                               os.path.exists(os.path.join(peer_credentials_dir, "protocol-params.json")):
-                                existing_node_configs.append({
-                                    "index": peer_index,
-                                    "hydra_dir": peer_hydra_dir,
-                                    "credentials_dir": peer_credentials_dir,
-                                    "data_dir": os.path.join(peer_hydra_dir, "data"),
-                                    "cardano_signing_key": os.path.join(peer_credentials_dir, "node.sk"),
-                                    "hydra_signing_key": os.path.join(peer_credentials_dir, "hydra.sk"),
-                                    "cardano_verification_key": os.path.join(peer_credentials_dir, "node.vk"),
-                                    "hydra_verification_key": os.path.join(peer_credentials_dir, "hydra.vk"),
-                                    "protocol_params_path": os.path.join(peer_credentials_dir, "protocol-params.json")
-                                })
-                        except ValueError:
-                            pass # Ignore directories not matching hydra-X pattern
-            
-            # Add the current node's config to the list for peer discovery
-            current_node_config = {
-                "index": node_index,
-                "hydra_dir": hydra_dir,
-                "credentials_dir": credentials_dir,
-                "data_dir": data_dir,
-                "cardano_signing_key": cardano_signing_key,
-                "hydra_signing_key": hydra_signing_key,
-                "cardano_verification_key": os.path.join(credentials_dir, "node.vk"),
-                "hydra_verification_key": os.path.join(credentials_dir, "hydra.vk"),
-                "protocol_params_path": protocol_params_path
-            }
-            # Ensure current node is in the list, if not already (e.g., if it was just created)
-            if not any(d['index'] == node_index for d in existing_node_configs):
-                existing_node_configs.append(current_node_config)
-            
-            # Generate and save the run script
-            if generate_and_save_hydra_run_script(
-                node_index=node_index,
-                network=network,
-                cardano_home=cardano_home,
-                node_bin_dir=node_bin_dir,
-                tx_id=tx_id,
-                testnet_magic=testnet_magic,
-                hydra_node_path=hydra_node_path,
-                node_configs=existing_node_configs # Pass all existing configs for peer discovery
-            ):
-                exec([run_script_path]) # Execute the newly created script
-            else:
-                print(f"Failed to generate run.sh for node {node_index}. Cannot execute.")
-                sys.exit(1)
-    elif known_args.command == "hydra" and known_args.subcommand == "prune":
-        import shutil
-        cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
-        network_dir = os.path.join(cardano_home, known_args.network)
-        
-        if not os.path.exists(network_dir):
-            print(f"Error: Network directory '{network_dir}' does not exist.")
-            sys.exit(1)
-
-        pruned_count = 0
-        for item in os.listdir(network_dir):
-            if item.startswith("hydra-") and os.path.isdir(os.path.join(network_dir, item)):
-                hydra_dir_to_remove = os.path.join(network_dir, item)
-                print(f"Removing directory: {hydra_dir_to_remove}")
-                shutil.rmtree(hydra_dir_to_remove)
-                pruned_count += 1
-        
-        if pruned_count > 0:
-            print(f"Successfully pruned {pruned_count} hydra directories for network {known_args.network}.")
-        else:
-            print(f"No hydra directories found to prune for network {known_args.network}.")
-    elif known_args.command == "hydra" and known_args.subcommand == "reset":
-        from adaup.commands.hydra import run as hydra_commands_run
-        hydra_commands_run(known_args)
+            parser.print_help()
     elif known_args.command == "etcd":
         from .download.etcd import download_and_setup_etcd, run_etcd
         cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
