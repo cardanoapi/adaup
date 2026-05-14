@@ -13,7 +13,7 @@ from adaup.download.hydra import (
 from adaup.download.exec import executor, exec
 
 HOME = os.environ.get("HOME", "/root")
-HYDRA_VERSION="0.22.4"
+HYDRA_VERSION="2.1.0"
 
 def create_hydra_credentials(cli:CardanoCLI,credentials_dir):
     """
