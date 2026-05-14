@@ -1,17 +1,18 @@
 #!/usr/bin/env python
 
+import json
 import os
 
 # Import executor helper from exec module
 from adaup.download.exec import executor
 
-from adaup.download.node import download_and_setup_cardano_node
+from adaup.download.node import DEFAULT_CARDANO_NODE_VERSION, download_and_setup_cardano_node
 from adaup.download.hydra import download_and_setup_hydra
 from adaup.download.mithril import download_and_setup_mithril
 from adaup.download.etcd import download_and_setup_etcd
 from adaup.download.node_config import download_network_configs, get_config_urls
 
-def start(node_version="10.4.1", network="mainnet"):
+def start(node_version=DEFAULT_CARDANO_NODE_VERSION, network="mainnet"):
     """
     Start the Cardano node.
 
@@ -25,17 +26,6 @@ def start(node_version="10.4.1", network="mainnet"):
     if not os.path.exists(node_bin_dir):
         os.makedirs(node_bin_dir)
 
-    # Download and setup Cardano node only if cardano-node is missing
-    from adaup.download.node import check_cardano_node_present
-
-    # Check for cardano-node and cardano-cli before downloading
-    if not check_cardano_node_present(node_bin_dir):
-        print("Cardano binaries not found, proceeding with download...")
-        node_bin_path = download_and_setup_cardano_node(node_version, cardano_home, node_bin_dir)
-    else:
-        node_bin_path = os.path.join(node_bin_dir, "cardano-node")
-        print(f"Cardano node and cardano-cli already exist at {node_bin_dir}. Skipping download.")
-
     config_dir = os.path.join(cardano_home, network, "configuration")
     if not os.path.exists(config_dir):
         os.makedirs(config_dir)
@@ -43,6 +33,27 @@ def start(node_version="10.4.1", network="mainnet"):
 
     # Download configs for the specified network
     download_network_configs(network, config_dir)
+
+    config_path = os.path.join(config_dir, "config.json")
+    required_node_version = node_version
+    with open(config_path, "r", encoding="utf-8") as config_file:
+        config = json.load(config_file)
+    min_node_version = config.get("MinNodeVersion")
+    if min_node_version:
+        requested_parts = tuple(int(part) for part in node_version.strip().lstrip("v").split("."))
+        minimum_parts = tuple(int(part) for part in min_node_version.strip().lstrip("v").split("."))
+        if requested_parts < minimum_parts:
+            print(
+                f"Requested cardano-node version {node_version} is older than the "
+                f"network minimum {min_node_version}. Using {min_node_version} instead."
+            )
+            required_node_version = min_node_version
+
+    node_bin_path = download_and_setup_cardano_node(
+        required_node_version,
+        cardano_home,
+        node_bin_dir
+    )
 
     # Start cardano-node
     print(f"Starting Cardano node on {network} network...")

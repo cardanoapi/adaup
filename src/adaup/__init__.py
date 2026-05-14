@@ -6,6 +6,7 @@ import argparse
 
 from .commands.cardano_cli import CardanoCLI
 from .download.exec import executor, exec
+from .download.node import DEFAULT_CARDANO_NODE_VERSION
 from .commands.hydra import (
     run_hydra_tui,
     bootstrap_hydra_nodes,
@@ -29,7 +30,7 @@ def main():
     )
     parser_node.add_argument(
         "--version",
-        default="10.5.1",
+        default=DEFAULT_CARDANO_NODE_VERSION,
         help="Cardano node version to use"
     )
 
@@ -62,7 +63,7 @@ def main():
     )
     parser_hydra_node.add_argument(
         "--version",
-        default="0.22.4",  # Example default version
+        default="1.1.0",  # Example default version
         help="Hydra client version to use"
     )
 

@@ -1,9 +1,11 @@
 import os
 import sys
 import platform
-import tarfile
 import zipfile
-from urllib.request import urlopen
+import json
+import re
+import subprocess
+from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 import shutil
@@ -12,20 +14,7 @@ import tqdm
 # Import executor helper from exec module
 from .exec import executor
 
-def check_cardano_node_present(node_bin_dir):
-    """
-    Check if cardano-node and cardano-cli are present in the bin directory.
-
-    Args:
-        node_bin_dir (str): The directory where the executable should reside.
-
-    Returns:
-        bool: True if both executables are found, False otherwise.
-    """
-    cardano_node_path = os.path.join(node_bin_dir, "cardano-node")
-    cardano_cli_path = os.path.join(node_bin_dir, "cardano-cli")
-
-    return os.path.isfile(cardano_node_path) and os.path.isfile(cardano_cli_path)
+DEFAULT_CARDANO_NODE_VERSION = "11.0.1"
 
 def safe_move(src, dst):
     """
@@ -53,7 +42,8 @@ def safe_move(src, dst):
 def download_url(url, dest_path):
     print(f"Downloading from {url}...")
     try:
-        with urlopen(url) as response, open(dest_path, 'wb') as out_file:
+        request = Request(url, headers={"User-Agent": "adaup"})
+        with urlopen(request) as response, open(dest_path, 'wb') as out_file:
             total_size = int(response.headers.get('Content-Length', 0))
             chunk_size = 8192
             downloaded = 0
@@ -92,20 +82,117 @@ def extract_archive(archive_path, extract_to):
         sys.exit(1)
     print("Extraction complete.")
 
-def check_cardano_node_present(node_bin_dir):
+def parse_version(version):
+    normalized = version.strip().lstrip("v")
+    return tuple(int(part) for part in normalized.split("."))
+
+def get_cardano_node_version(node_bin_dir):
+    """
+    Return the installed cardano-node version if available.
+    """
+    cardano_node_path = os.path.join(node_bin_dir, "cardano-node")
+    if not os.path.isfile(cardano_node_path):
+        return None
+
+    try:
+        result = subprocess.run(
+            [cardano_node_path, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+
+    output = (result.stdout or "") + (result.stderr or "")
+    match = re.search(r"cardano-node\s+(\d+\.\d+\.\d+)", output)
+    if not match:
+        return None
+    return match.group(1)
+
+def check_cardano_node_present(node_bin_dir, min_version=None):
     """
     Check if cardano-node and cardano-cli are present in the bin directory.
 
     Args:
         node_bin_dir (str): The directory where the executable should reside.
+        min_version (str | None): Minimum acceptable cardano-node version.
 
     Returns:
         bool: True if both executables are found, False otherwise.
     """
     cardano_node_path = os.path.join(node_bin_dir, "cardano-node")
     cardano_cli_path = os.path.join(node_bin_dir, "cardano-cli")
+    if not (os.path.isfile(cardano_node_path) and os.path.isfile(cardano_cli_path)):
+        return False
 
-    return os.path.isfile(cardano_node_path) and os.path.isfile(cardano_cli_path)
+    if min_version is None:
+        return True
+
+    installed_version = get_cardano_node_version(node_bin_dir)
+    if installed_version is None:
+        return False
+    return parse_version(installed_version) >= parse_version(min_version)
+
+def resolve_cardano_node_release(node_version):
+    """
+    Resolve the correct release asset URL for the current platform.
+    """
+    current_platform = platform.system().lower()
+    machine = platform.machine().lower()
+
+    if current_platform == "linux":
+        extension = ".tar.gz"
+        if machine in ("x86_64", "amd64"):
+            platform_suffix = "linux-amd64"
+        elif machine in ("aarch64", "arm64"):
+            platform_suffix = "linux-arm64"
+        else:
+            print(f"Unsupported Linux architecture: {machine}")
+            sys.exit(1)
+    elif current_platform == "darwin":
+        extension = ".tar.gz"
+        if machine in ("x86_64", "amd64"):
+            platform_suffix = "macos-amd64"
+        elif machine in ("arm64", "aarch64"):
+            platform_suffix = "macos-arm64"
+        else:
+            print(f"Unsupported macOS architecture: {machine}")
+            sys.exit(1)
+    elif current_platform in ["windows", "cygwin"]:
+        extension = ".zip"
+        if machine in ("x86_64", "amd64"):
+            platform_suffix = "win-amd64"
+        else:
+            print(f"Unsupported Windows architecture: {machine}")
+            sys.exit(1)
+    else:
+        print(f"Unsupported platform: {current_platform}")
+        sys.exit(1)
+
+    release_api_url = (
+        f"https://api.github.com/repos/IntersectMBO/cardano-node/releases/tags/{node_version}"
+    )
+    try:
+        request = Request(release_api_url, headers={"User-Agent": "adaup"})
+        with urlopen(request) as response:
+            release = json.load(response)
+    except HTTPError as e:
+        print(f"HTTP Error {e.code} while resolving release metadata: {release_api_url}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error resolving Cardano node release metadata: {str(e)}")
+        sys.exit(1)
+
+    expected_asset_name = f"cardano-node-{node_version}-{platform_suffix}{extension}"
+    for asset in release.get("assets", []):
+        if asset.get("name") == expected_asset_name:
+            return expected_asset_name, asset.get("browser_download_url")
+
+    print(
+        f"Could not find release asset {expected_asset_name} for cardano-node {node_version}."
+    )
+    sys.exit(1)
 
 def download_and_setup_cardano_node(node_version, cardano_home, node_bin_dir):
     """
@@ -121,35 +208,26 @@ def download_and_setup_cardano_node(node_version, cardano_home, node_bin_dir):
     """
     print(f"Downloading and setting up Cardano node {node_version}...")
 
-    # Check if cardano-node and cardano-cli are already present
-    if check_cardano_node_present(node_bin_dir):
+    installed_version = get_cardano_node_version(node_bin_dir)
+    if check_cardano_node_present(node_bin_dir, node_version):
         node_bin_path = os.path.join(node_bin_dir, "cardano-node")
-        print(f"Cardano node and cardano-cli already exist at {node_bin_dir}. Skipping download.")
+        print(
+            f"Cardano node {installed_version} and cardano-cli already exist at "
+            f"{node_bin_dir}. Skipping download."
+        )
         return node_bin_path
+    if installed_version is not None:
+        print(
+            f"Installed cardano-node version {installed_version} is older than "
+            f"required version {node_version}. Reinstalling binaries..."
+        )
 
-    current_platform = platform.system().lower()
-    archive_file=""
-    if current_platform == "linux":
-        archive_file=f"cardano-node-{node_version}-linux.tar.gz"
-        url = f"https://github.com/IntersectMBO/cardano-node/releases/download/{node_version}/{archive_file}"
-    elif current_platform == "darwin":
-        archive_file=f"cardano-node-{node_version}-macos.tar.gz"
-        url = f"https://github.com/IntersectMBO/cardano-node/releases/download/{node_version}/{archive_file}"
-    elif current_platform in ["windows", "cygwin"]:
-        archive_file=f"cardano-node-{node_version}-win64.zip"
-        url = f"https://github.com/IntersectMBO/cardano-node/releases/download/{node_version}/{archive_file}"
-    else:
-        print(f"Unsupported platform: {current_platform}")
-        sys.exit(1)
-
-    node_bin_path = os.path.join(node_bin_dir, "cardano-node")
-    if os.path.isfile(node_bin_path):
-        print(f"Cardano node already exists at {node_bin_path}. Skipping download.")
-        return node_bin_path
+    archive_file, url = resolve_cardano_node_release(node_version)
 
     tmp_download_dir = os.path.join(cardano_home, "tmp_downloads")
     os.makedirs(tmp_download_dir, exist_ok=True)
     tmp_archive = os.path.join(tmp_download_dir, archive_file)
+    node_bin_path = os.path.join(node_bin_dir, "cardano-node")
 
     try:
         download_url(url, tmp_archive)

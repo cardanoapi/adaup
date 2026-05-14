@@ -2,6 +2,7 @@
 Cardano node configuration utilities.
 """
 
+import json
 import os
 
 def get_config_urls(network):
@@ -37,9 +38,84 @@ def get_config_urls(network):
         ]
     else:
         raise ValueError(f"Unsupported network: {network}")
-    if network == 'mainnet':
-        files.append(("https://book.play.dev.cardano.org/environments/mainnet/checkpoints.json","checkpoints.json"))
     return files
+
+def get_optional_config_urls(network, config_dir):
+    """
+    Discover optional config artifacts referenced by config.json.
+
+    Args:
+        network: Normalized network name.
+        config_dir: Directory where the configuration files are stored.
+
+    Returns:
+        A list of tuples with (url, filename)
+    """
+    config_path = os.path.join(config_dir, "config.json")
+    if not os.path.exists(config_path):
+        return []
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Error reading config.json for optional artifacts: {exc}")
+        return []
+
+    optional_files = []
+    checkpoints_file = config.get("CheckpointsFile")
+    if checkpoints_file:
+        optional_files.append(
+            (
+                f"https://book.play.dev.cardano.org/environments/{network}/{checkpoints_file}",
+                checkpoints_file,
+            )
+        )
+    return optional_files
+
+def ensure_config_file(url, filename, network, config_dir):
+    """
+    Ensure a single network configuration file exists locally.
+    """
+    local_path = os.path.join(config_dir, filename)
+    if os.path.exists(local_path):
+        return True
+
+    print(f"{filename} is missing. Checking for default location...")
+
+    alternative_paths = [
+        f"/etc/cardano/{network}/{filename}",
+        f"/usr/share/doc/cardano-node-{network}/{filename}",
+        os.path.join(os.path.expanduser("~/.cardano"), network, "configuration", filename),
+    ]
+
+    for alt_path in alternative_paths:
+        if os.path.exists(alt_path):
+            print(f"Found {filename} at {alt_path}, copying to {config_dir}...")
+            try:
+                import shutil
+                shutil.copy2(alt_path, local_path)
+                return True
+            except Exception as e:
+                print(f"Error copying config: {str(e)}")
+
+    print(f"{filename} is missing. Downloading...")
+    try:
+        from urllib.request import urlopen
+        with urlopen(url) as response, open(local_path, 'wb') as out_file:
+            chunk_size = 8192
+
+            print(f"Downloading {filename}...")
+
+            while True:
+                buffer = response.read(chunk_size)
+                if not buffer:
+                    break
+                out_file.write(buffer)
+        return True
+    except Exception as e:
+        print(f"Error downloading {filename}: {str(e)}")
+        return False
 
 def download_network_configs(network, config_dir):
     """
@@ -53,55 +129,28 @@ def download_network_configs(network, config_dir):
         ValueError: If an unsupported network is specified
     """
     # Get URLs with network parameter
-    config_urls = get_config_urls(network)
-    config_urls = [(url.format(network=network), filename) for url, filename in config_urls]
+    normalized_network = "preprod" if network == "testnet" else network
+    config_urls = [(url.format(network=normalized_network), filename) for url, filename in get_config_urls(normalized_network)]
 
-    # Check for existing configs and download if missing
+    missing_files = []
     for url, filename in config_urls:
-        local_path = os.path.join(config_dir, filename)
+        if not ensure_config_file(url, filename, normalized_network, config_dir):
+            missing_files.append(filename)
 
-        # First check if there's a local config file already available
-        # This is useful for testnet where we might need to manually provide the configuration
-        if not os.path.exists(local_path):
-            print(f"{filename} is missing. Checking for default location...")
+    optional_urls = get_optional_config_urls(normalized_network, config_dir)
+    for url, filename in optional_urls:
+        if not ensure_config_file(url, filename, normalized_network, config_dir):
+            missing_files.append(filename)
 
-            # Check in parent directory structure for common config locations
-            alternative_paths = [
-                f"/etc/cardano/{network}/{filename}",
-                f"/usr/share/doc/cardano-node-{network}/{filename}",
-                f"/home/sudip/.cardano/preview/configuration/{filename}"
-            ]
+    expected_files = [filename for _, filename in config_urls]
+    expected_files.extend(filename for _, filename in optional_urls)
+    missing_files.extend(
+        filename for filename in expected_files
+        if not os.path.exists(os.path.join(config_dir, filename))
+    )
 
-            found_alternative = False
-            for alt_path in alternative_paths:
-                if os.path.exists(alt_path):
-                    print(f"Found {filename} at {alt_path}, copying to {config_dir}...")
-                    try:
-                        import shutil
-                        shutil.copy2(alt_path, local_path)
-                        found_alternative = True
-                        break
-                    except Exception as e:
-                        print(f"Error copying config: {str(e)}")
-
-            # If no alternative was found or copy failed, attempt download
-            if not os.path.exists(local_path) and not found_alternative:
-                print(f"{filename} is missing. Downloading...")
-                try:
-                    from urllib.request import urlopen
-                    with urlopen(url) as response, open(local_path, 'wb') as out_file:
-                        total_size = int(response.headers.get('Content-Length', 0))
-                        chunk_size = 8192
-                        downloaded = 0
-
-                        print(f"Downloading {filename}...")
-
-                        while True:
-                            buffer = response.read(chunk_size)
-                            if not buffer:
-                                break
-                            out_file.write(buffer)
-                            downloaded += len(buffer)
-                except Exception as e:
-                    print(f"Error downloading {filename}: {str(e)}")
-                    # Don't exit on failure - continue with what we have or user-provided configs
+    if missing_files:
+        missing_names = ", ".join(sorted(set(missing_files)))
+        raise RuntimeError(
+            f"Missing required Cardano config files for {network}: {missing_names}"
+        )
