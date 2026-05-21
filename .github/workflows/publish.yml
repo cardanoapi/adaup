@@ -38,7 +38,24 @@ jobs:
           # Extract the tag from github.ref (e.g., refs/tags/v1.2.3)
           CURRENT_TAG="${{ github.ref }}"
           VERSION=${CURRENT_TAG#refs/tags/v}  # Remove 'refs/tags/v' from the tag
-          sed -i "s/version=\"[^\"]*\"/version=\"$VERSION\"/" setup.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          version = "${{ github.ref }}".removeprefix("refs/tags/v")
+          setup_py = Path("setup.py")
+          content = setup_py.read_text()
+          updated = re.sub(
+              r"version\s*=\s*['\"][^'\"]*['\"]",
+              f"version='{version}'",
+              content,
+              count=1,
+          )
+          if updated == content:
+              raise SystemExit("Failed to update version in setup.py")
+          setup_py.write_text(updated)
+          PY
+          rm -rf dist build
           python setup.py sdist bdist_wheel
 
       # Upload the distribution to PyPI
