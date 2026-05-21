@@ -6,6 +6,10 @@ setup(
     version='0.1.5',
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
+    include_package_data=True,
+    package_data={
+        'adaup': ['assets/devnet/cardano-node/*'],
+    },
     install_requires=[
         'tqdm',
     ],

@@ -34,6 +34,14 @@ You can also specify a different network or node version:
 cardano node mainnet 
 ```
 
+For a local single-node development network with prepackaged genesis material and an auto-funded default wallet in `~/.cardano/keys`, use:
+
+```bash
+cardano node devnet
+```
+
+This starts a local node at `~/.cardano/devnet/node.socket` using cardano-node `11.0.1`, regenerates `payment.*`, `stake.*` and `payment.addr` under `~/.cardano/keys` on each run, and funds that address with `1000000000000` lovelace (1,000,000 ADA) from the devnet faucet. The packaged devnet genesis funds the faucet with enough lovelace for repeated local bootstraps.
+
 ### Running Cardano CLI Commands
 
 To execute `cardano-cli` commands, use the `cli` subcommand followed by the `cardano-cli` arguments:
@@ -90,23 +98,3 @@ To set up and run a Hydra cluster:
     ```bash
     cardano hydra prune preview
     ```
-
-## Generated Directory Structure
-
-For each network, adaup will generate following directory structure in the `$HOME/.cardano` directory.
-
-```
-$HOME/
-└── .cardano
-    ├── bin
-    │   └── ... # common binary files cardano-node, cardano-cli, hydra-node etc.
-    ├── mainnet
-    │   │── configuration
-    │   │── db
-    │   │── hydra-{index}  
-    │   └── ...  
-    ├── preview (same as mainnet)
-    │   └── ...
-    ├── preprod (same as mainnet)
-    │   └── ...
-```

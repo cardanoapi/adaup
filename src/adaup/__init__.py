@@ -7,6 +7,7 @@ import argparse
 from .commands.cardano_cli import CardanoCLI
 from .download.exec import executor, exec
 from .download.node import DEFAULT_CARDANO_NODE_VERSION
+from .download.mithril import DEFAULT_MITHRIL_DISTRIBUTION
 from .commands.hydra import (
     run_hydra_tui,
     bootstrap_hydra_nodes,
@@ -38,8 +39,8 @@ def main():
     parser_mithril = subparsers.add_parser("mithril", help="Download and setup Mithril")
     parser_mithril.add_argument(
         "--version",
-        default="0.2.5",  # Example default version
-        help="Mithril client version to use"
+        default=DEFAULT_MITHRIL_DISTRIBUTION,
+        help="Mithril client distribution to use"
     )
 
     # Hydra command
@@ -140,8 +141,8 @@ def main():
         node_bin_dir = os.path.join(cardano_home, "bin")
         if not os.path.exists(node_bin_dir):
             os.makedirs(node_bin_dir)
-        download_and_setup_mithril(node_bin_dir)
-        run_mithril_client(node_bin_dir)
+        download_and_setup_mithril(node_bin_dir, known_args.version)
+        run_mithril_client(node_bin_dir, known_args.version)
     elif known_args.command == "hydra":
         if known_args.subcommand == "tui":
             run_hydra_tui(known_args)

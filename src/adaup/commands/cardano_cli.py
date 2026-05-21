@@ -44,6 +44,8 @@ def parse_network(network:str|None)->str:
                 network="--testnet-magic=1"
             elif network == 'testnet':
                 network="--testnet-magic=42"
+            elif network == 'devnet':
+                network="--testnet-magic=42"
             pass
         return network
     else:
@@ -94,15 +96,34 @@ class WalletStore:
         payment_vkey = os.path.join(self.keys_dir, (name if name else "payment") +".vk")
         payment_skey = os.path.join(self.keys_dir, (name if name else "payment") +".sk")
         payment_addr = os.path.join(self.keys_dir, (name if name else "payment") +".addr")
-        if check_if_file_exists(payment_vkey,payment_skey,payment_addr,raise_error=(not skip_if_present)):
-            return False
+        payment_pair_present = os.path.exists(payment_vkey) and os.path.exists(payment_skey)
+        if os.path.exists(payment_vkey) and os.path.exists(payment_skey) and os.path.exists(payment_addr):
+            if skip_if_present:
+                return False
+            return self.load_enterprise_wallet(cli, name)
 
-        
+        if skip_if_present and (os.path.exists(payment_vkey) or os.path.exists(payment_skey) or os.path.exists(payment_addr)):
+            print("Some File Already Exists:")
+            for file in (payment_vkey, payment_skey, payment_addr):
+                if os.path.exists(file):
+                    print(" -",file)
+            print("Remove them to regenerate enterprise wallet files cleanly")
+            exit(1)
+
+        if os.path.exists(payment_vkey) != os.path.exists(payment_skey):
+            print("Payment key files are incomplete:")
+            for file in (payment_vkey, payment_skey):
+                print(" -",file, "(present)" if os.path.exists(file) else "(missing)")
+            print("Remove incomplete files and retry")
+            exit(1)
+
         # Generate keys
-        cli.cardano_cli( "address", "key-gen", ["--verification-key-file", payment_vkey, "--signing-key-file", payment_skey])
+        if not payment_pair_present:
+            cli.cardano_cli( "address", "key-gen", ["--verification-key-file", payment_vkey, "--signing-key-file", payment_skey])
         
         # Build the enterprise address
-        cli.cardano_cli( "address", "build", ["--payment-verification-key-file", payment_vkey,  "--out-file", payment_addr],include_network=True)
+        if not payment_pair_present or not os.path.exists(payment_addr):
+            cli.cardano_cli_conway( "address", "build", ["--payment-verification-key-file", payment_vkey,  "--out-file", payment_addr],include_network=True)
         
         # Read the payment address from the file
         with open(payment_addr, 'r') as f:
@@ -119,15 +140,33 @@ class WalletStore:
         stake_vkey = path_join(self.keys_dir, "stake.vk")
         stake_skey = path_join(self.keys_dir, "stake.sk")
         payment_addr = os.path.join(self.keys_dir,name+".addr" if name else "payment.addr")
-        check_if_file_exists(payment_vkey,payment_skey,stake_vkey,stake_skey,payment_addr)
+        payment_pair_present = os.path.exists(payment_vkey) and os.path.exists(payment_skey)
+        stake_pair_present = os.path.exists(stake_vkey) and os.path.exists(stake_skey)
+
+        if os.path.exists(payment_vkey) != os.path.exists(payment_skey):
+            print("Payment key files are incomplete:")
+            for file in (payment_vkey, payment_skey):
+                print(" -",file, "(present)" if os.path.exists(file) else "(missing)")
+            print("Remove incomplete files and retry")
+            exit(1)
+
+        if os.path.exists(stake_vkey) != os.path.exists(stake_skey):
+            print("Stake key files are incomplete:")
+            for file in (stake_vkey, stake_skey):
+                print(" -",file, "(present)" if os.path.exists(file) else "(missing)")
+            print("Remove incomplete files and retry")
+            exit(1)
 
         
         # Generate keys
-        cli.cardano_cli( "address", "key-gen", ["--verification-key-file", payment_vkey, "--signing-key-file", payment_skey])
-        cli.cardano_cli("stake-address", "key-gen", ["--verification-key-file", stake_vkey, "--signing-key-file", stake_skey])
+        if not payment_pair_present:
+            cli.cardano_cli( "address", "key-gen", ["--verification-key-file", payment_vkey, "--signing-key-file", payment_skey])
+        if not stake_pair_present:
+            cli.cardano_cli_conway("stake-address", "key-gen", ["--verification-key-file", stake_vkey, "--signing-key-file", stake_skey])
         
         # Build the payment address
-        cli.cardano_cli( "address", "build", ["--payment-verification-key-file", payment_vkey, "--stake-verification-key-file", stake_vkey, "--out-file", payment_addr],include_network=True)
+        if not payment_pair_present or not stake_pair_present or not os.path.exists(payment_addr):
+            cli.cardano_cli_conway( "address", "build", ["--payment-verification-key-file", payment_vkey, "--stake-verification-key-file", stake_vkey, "--out-file", payment_addr],include_network=True)
         
         # Read the payment address from the file
         with open(payment_addr, 'r') as f:
@@ -599,7 +638,7 @@ class CardanoCLI:
 
 
     def get_tx_id(self,tx_file):
-        return self.cardano_cli("transaction","txid",["--tx-file",tx_file])
+        return self.cardano_cli_conway("transaction","txid",["--tx-file",tx_file,"--output-text"])
     
 def check_if_file_exists(*files,raise_error=True):
     existing_files = []
