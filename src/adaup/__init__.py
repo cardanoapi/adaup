@@ -9,6 +9,7 @@ from .download.exec import executor, exec
 from .download.node import DEFAULT_CARDANO_NODE_VERSION
 from .download.mithril import DEFAULT_MITHRIL_DISTRIBUTION
 from .commands.hydra import (
+    HYDRA_VERSION,
     run_hydra_tui,
     bootstrap_hydra_nodes,
     run_hydra_node,
@@ -64,7 +65,7 @@ def main():
     )
     parser_hydra_node.add_argument(
         "--version",
-        default="1.1.0",  # Example default version
+        default=HYDRA_VERSION,
         help="Hydra client version to use"
     )
 
@@ -92,6 +93,11 @@ def main():
         default=1,
         help="The number of hydra nodes for which to generate credentials"
     )
+    parser_hydra_bootstrap.add_argument(
+        "--version",
+        default=HYDRA_VERSION,
+        help="Hydra client version to use"
+    )
 
     # Prune subcommand
     parser_hydra_prune = hydra_subparsers.add_parser("prune", help="Remove all hydra-xxx directories for a given network")
@@ -109,14 +115,6 @@ def main():
         nargs="?",
         default="mainnet",
         help="The network for which to reset hydra node data (default: mainnet)"
-    )
-
-    # Etcd command
-    parser_etcd = subparsers.add_parser("etcd", help="Download and setup Etcd")
-    parser_etcd.add_argument(
-        "--version",
-        default="v3.5.21",  # Example default version
-        help="Etcd client version to use"
     )
 
     # CLI command
@@ -156,14 +154,6 @@ def main():
             reset_hydra_data(known_args)
         else:
             parser.print_help()
-    elif known_args.command == "etcd":
-        from .download.etcd import download_and_setup_etcd, run_etcd
-        cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
-        node_bin_dir = os.path.join(cardano_home, "bin")
-        if not os.path.exists(node_bin_dir):
-            os.makedirs(node_bin_dir)
-        download_and_setup_etcd(known_args.version, node_bin_dir)
-        run_etcd(node_bin_dir)
     else:
         parser.print_help()
 

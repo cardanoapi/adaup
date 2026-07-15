@@ -7,7 +7,6 @@ Available submodules:
 - node: For downloading and setting up the Cardano node
 - hydra: For downloading and setting up Hydra
 - mithril: For downloading and setting up Mithril
-- etcd: For downloading and setting up Etcd
 - node_config: Utilities for configuring the Cardano node, including
   downloading network-specific configuration files.
 """

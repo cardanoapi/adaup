@@ -3,9 +3,12 @@ import shutil
 import glob
 import json
 import argparse
+import subprocess
 import sys
+import time
+from typing import List
 
-from adaup.commands.cardano_cli import CardanoCLI, WalletStore
+from adaup.commands.cardano_cli import CardanoCLI, WalletStore, parse_network
 from adaup.download.hydra import (
     fetch_network_json,
     download_and_setup_hydra
@@ -13,7 +16,74 @@ from adaup.download.hydra import (
 from adaup.download.exec import executor, exec
 
 HOME = os.environ.get("HOME", "/root")
-HYDRA_VERSION="2.1.0"
+HYDRA_VERSION="2.2.0"
+OFFICIAL_HYDRA_NETWORKS = {"mainnet", "preview", "preprod", "sanchonet"}
+LOCAL_HYDRA_SCRIPT_NETWORKS = {"devnet"}
+DEVNET_HYDRA_NODE_FUNDING_LOVELACE = 200_000_000
+DEVNET_HYDRA_FUNDS_FUNDING_LOVELACE = 500_000_000
+
+
+def resolve_hydra_version(args):
+    return getattr(args, "version", None) or HYDRA_VERSION
+
+
+def normalize_hydra_network_name(network: str) -> str:
+    if network == "sancho":
+        return "sanchonet"
+    return network
+
+
+def build_cardano_network_args(network: str) -> List[str]:
+    parsed_network = parse_network(network)
+    if parsed_network.startswith("--testnet-magic="):
+        return ["--testnet-magic", parsed_network.split("=", 1)[1]]
+    if parsed_network == "--mainnet":
+        return ["--mainnet"]
+    return [parsed_network]
+
+
+def build_hydra_scripts_args(network: str, hydra_version: str) -> List[str]:
+    normalized_network = normalize_hydra_network_name(network)
+    if normalized_network in OFFICIAL_HYDRA_NETWORKS:
+        return ["--network", normalized_network]
+
+    local_scripts_tx_id = get_local_hydra_scripts_tx_id(network, hydra_version)
+    if local_scripts_tx_id:
+        return ["--hydra-scripts-tx-id", local_scripts_tx_id]
+
+    networks_data = fetch_network_json()
+    tx_id = networks_data.get(normalized_network, {}).get(hydra_version)
+    if not isinstance(tx_id, str) or not tx_id.strip():
+        print(
+            f"Error: Could not find Hydra script references for "
+            f"{normalized_network}.{hydra_version} in networks.json."
+        )
+        sys.exit(1)
+
+    if "," in tx_id:
+        print(
+            f"Error: Hydra {hydra_version} publishes multiple script references for "
+            f"{normalized_network}, which adaup can only handle through "
+            f"'--network {normalized_network}'."
+        )
+        sys.exit(1)
+
+    return ["--hydra-scripts-tx-id", tx_id]
+
+
+def run_script_needs_regeneration(run_script_path: str, network: str) -> bool:
+    if not os.path.exists(run_script_path):
+        return True
+
+    with open(run_script_path, "r", encoding="utf-8") as f:
+        run_script = f.read()
+
+    normalized_network = normalize_hydra_network_name(network)
+    if normalized_network in OFFICIAL_HYDRA_NETWORKS and "--hydra-scripts-tx-id" in run_script:
+        return True
+    if network == "mainnet" and "--testnet-magic 0" in run_script:
+        return True
+    return False
 
 def create_hydra_credentials(cli:CardanoCLI,credentials_dir):
     """
@@ -41,11 +111,7 @@ def create_hydra_credentials(cli:CardanoCLI,credentials_dir):
     hydr_output_file=os.path.join(credentials_dir, "hydra")
     files=[hydr_output_file+".sk",hydr_output_file+".vk"]
     
-    present =False
-    for file in files:
-        if  os.path.isfile(file) and os.access(file, os.X_OK):
-            present=True
-    if present:
+    if all(os.path.isfile(file) for file in files):
         print("[Hydra] Node keys are already present")
         return
         
@@ -59,6 +125,143 @@ def create_hydra_credentials(cli:CardanoCLI,credentials_dir):
         "--output-file", hydr_output_file
     ], show_command=True, throw_error=True)
     print("Hydra credentials created successfully.")
+
+
+def get_network_dir(cardano_home: str, network: str) -> str:
+    return os.path.join(cardano_home, network)
+
+
+def get_local_hydra_scripts_tx_id_path(cardano_home: str, network: str, hydra_version: str) -> str:
+    return os.path.join(get_network_dir(cardano_home, network), f"hydra-scripts-{hydra_version}.txid")
+
+
+def get_local_hydra_scripts_tx_id(network: str, hydra_version: str, cardano_home: str | None = None) -> str | None:
+    if cardano_home is None:
+        cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
+    tx_id_path = get_local_hydra_scripts_tx_id_path(cardano_home, network, hydra_version)
+    if not os.path.exists(tx_id_path):
+        return None
+    with open(tx_id_path, "r", encoding="utf-8") as file:
+        tx_id = file.read().strip()
+    return tx_id or None
+
+
+def save_local_hydra_scripts_tx_id(cardano_home: str, network: str, hydra_version: str, tx_id: str) -> str:
+    network_dir = get_network_dir(cardano_home, network)
+    os.makedirs(network_dir, exist_ok=True)
+    tx_id_path = get_local_hydra_scripts_tx_id_path(cardano_home, network, hydra_version)
+    with open(tx_id_path, "w", encoding="utf-8") as file:
+        file.write(tx_id.strip() + "\n")
+    return tx_id_path
+
+
+def ensure_wallet_has_minimum_balance(cli: CardanoCLI, source_wallet, target_wallet, minimum_lovelace: int, tx_name: str):
+    target_utxos = query_wallet_utxos_json(cli, target_wallet)
+    current_balance = sum(item.get("value", {}).get("lovelace", 0) for item in target_utxos.values())
+    if current_balance >= minimum_lovelace:
+        return
+
+    top_up_lovelace = minimum_lovelace - current_balance
+    print(f"Funding {target_wallet.address} with {top_up_lovelace} lovelace...")
+    tx_id = cli.build_and_submit(
+        source_wallet,
+        tx_name,
+        ["--tx-out", f"{target_wallet.address}+{top_up_lovelace}"],
+    )
+    print(f"Submitted Hydra funding transaction: {tx_id}")
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        target_utxos = query_wallet_utxos_json(cli, target_wallet)
+        balance = sum(item.get("value", {}).get("lovelace", 0) for item in target_utxos.values())
+        if balance >= minimum_lovelace:
+            return
+        time.sleep(1)
+    raise RuntimeError(f"Timed out funding Hydra wallet {target_wallet.address}")
+
+
+def query_wallet_utxos_json(cli: CardanoCLI, wallet):
+    out_file = os.path.join(os.environ.get("CARDANO_KEYS_DIR", os.path.join(HOME, ".cardano", "keys")), "tmp", "hydra-utxo.json")
+    cli.cardano_cli(
+        "query",
+        "utxo",
+        ["--address", wallet.address, "--out-file", out_file],
+        include_network=True,
+        include_socket=True,
+    )
+    with open(out_file, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def ensure_devnet_hydra_wallet_funding(cli: CardanoCLI, cardano_home: str, network: str, node_index: int):
+    if network != "devnet":
+        return
+
+    source_keys_dir = os.environ.get("CARDANO_KEYS_DIR", os.path.join(cardano_home, "keys"))
+    source_store = WalletStore(source_keys_dir)
+    source_wallet = source_store.load_wallet()
+
+    credentials_dir = os.path.join(cardano_home, network, f"hydra-{node_index}", "credentials")
+    target_store = WalletStore(credentials_dir)
+    node_wallet = target_store.load_enterprise_wallet(cli, "node")
+    funds_wallet = target_store.load_enterprise_wallet(cli, "funds")
+
+    ensure_wallet_has_minimum_balance(
+        cli,
+        source_wallet,
+        node_wallet,
+        DEVNET_HYDRA_NODE_FUNDING_LOVELACE,
+        f"hydra-node-fund-{node_index}",
+    )
+    ensure_wallet_has_minimum_balance(
+        cli,
+        source_wallet,
+        funds_wallet,
+        DEVNET_HYDRA_FUNDS_FUNDING_LOVELACE,
+        f"hydra-funds-fund-{node_index}",
+    )
+
+
+def ensure_local_hydra_scripts(cli: CardanoCLI, cardano_home: str, network: str, hydra_version: str, hydra_node_path: str):
+    if network not in LOCAL_HYDRA_SCRIPT_NETWORKS:
+        return None
+
+    existing_tx_id = get_local_hydra_scripts_tx_id(network, hydra_version, cardano_home)
+    if existing_tx_id:
+        return existing_tx_id
+
+    credentials_dir = os.path.join(cardano_home, network, "hydra-0", "credentials")
+    signing_key = os.path.join(credentials_dir, "node.sk")
+    if not os.path.exists(signing_key):
+        raise RuntimeError(
+            f"Cannot publish Hydra scripts for {network}: missing signing key {signing_key}"
+        )
+
+    print(f"Publishing Hydra scripts for local network {network}...")
+    publish_result = subprocess.run(
+        [
+            hydra_node_path,
+            "publish-scripts",
+            "--cardano-signing-key",
+            signing_key,
+            "--node-socket",
+            os.path.join(cardano_home, network, "node.socket"),
+            "--testnet-magic",
+            parse_network(network).split("=", 1)[1],
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if publish_result.stdout:
+        print(publish_result.stdout, end="")
+    if publish_result.stderr:
+        print(publish_result.stderr, end="")
+    tx_id = (publish_result.stdout or "").strip().splitlines()[-1].strip()
+    if not tx_id:
+        raise RuntimeError(f"Could not parse Hydra script publication tx id for {network}")
+    save_local_hydra_scripts_tx_id(cardano_home, network, hydra_version, tx_id)
+    print(f"Published Hydra scripts for {network}: {tx_id}")
+    return tx_id
 
 def generate_protocol_parameters(cli:CardanoCLI,filePath:str):
     """
@@ -89,8 +292,7 @@ def generate_and_save_hydra_run_script(
         network: str,
         cardano_home: str,
         node_bin_dir: str,
-        tx_id: str,
-        testnet_magic: int,
+        hydra_version: str,
         hydra_node_path: str,
         node_configs: list = None
     ):
@@ -102,8 +304,7 @@ def generate_and_save_hydra_run_script(
         network (str): The Cardano network.
         cardano_home (str): Path to the .cardano home directory.
         node_bin_dir (str): Path to the directory containing hydra-node executable.
-        tx_id (str): Hydra scripts transaction ID.
-        testnet_magic (int): Testnet magic number.
+        hydra_version (str): Hydra version used for this node.
         hydra_node_path (str): Path to the hydra-node executable.
         node_configs (list): A list of dictionaries, where each dictionary contains
                              configuration details (including paths to verification keys)
@@ -138,14 +339,14 @@ def generate_and_save_hydra_run_script(
         "--persistence-dir", data_dir,
         "--cardano-signing-key", cardano_signing_key,
         "--hydra-signing-key", hydra_signing_key,
-        "--hydra-scripts-tx-id", tx_id,
         "--ledger-protocol-parameters", protocol_params_path,
-        "--testnet-magic", str(testnet_magic),
         "--node-socket", os.path.join(cardano_home, network, "node.socket"),
         "--api-port", str(4001 + node_index),
         "--listen", f"127.0.0.1:{5001 + node_index}",
         "--api-host", "0.0.0.0",
     ]
+    run_command.extend(build_hydra_scripts_args(network, hydra_version))
+    run_command.extend(build_cardano_network_args(network))
 
     peers = []
     if node_configs:
@@ -176,14 +377,14 @@ def generate_and_save_hydra_run_script(
             formatted_command_parts.append(f"  {part}")
             cmd_idx += 1
     
-    run_script_content = f"#!/bin/bash\n\n{run_command[0]}"
+    run_script_content = f"#!/usr/bin/env bash\n\n{run_command[0]}"
     if len(formatted_command_parts) > 0:
         run_script_content += " \\\n" + " \\\n".join(formatted_command_parts)
     run_script_content += "\n"
     
     run_script_path = os.path.join(hydra_dir, "run.sh")
 
-    with open(run_script_path, 'w') as f:
+    with open(run_script_path, "w", encoding="utf-8") as f:
         f.write(run_script_content)
     os.chmod(run_script_path, 0o755)
 
@@ -251,6 +452,7 @@ def run_hydra_tui(args):
         "credentials"
     )
 
+    download_and_setup_hydra(HYDRA_VERSION, node_bin_dir)
     hydra_tui_path = os.path.join(node_bin_dir, "hydra-tui")
     if not os.path.isfile(hydra_tui_path) or not os.access(hydra_tui_path, os.X_OK):
         print(f"Error: 'hydra-tui' executable not found in {node_bin_dir}")
@@ -272,17 +474,9 @@ def run_hydra_tui(args):
 def bootstrap_hydra_nodes(args):
     cardano_home = os.environ.get("CARDANO_HOME", os.path.expanduser("~/.cardano"))
     node_bin_dir = os.path.join(cardano_home, "bin")
+    hydra_version = resolve_hydra_version(args)
 
-    download_and_setup_hydra(HYDRA_VERSION, node_bin_dir)
-
-    networks_data = fetch_network_json()
-    node_version = HYDRA_VERSION
-    tx_id_list = networks_data.get(args.network, {}).get(node_version, [])
-    if not isinstance(tx_id_list, str):
-        print(f"Error: Could not find transaction ID for {args.network}.{node_version} in the network configuration.")
-        sys.exit(1)
-    tx_id = tx_id_list
-    testnet_magic = 2 if args.network != "mainnet" else 0
+    download_and_setup_hydra(hydra_version, node_bin_dir)
     hydra_node_path = os.path.join(node_bin_dir, "hydra-node")
 
     node_configs = []
@@ -300,6 +494,7 @@ def bootstrap_hydra_nodes(args):
         os.makedirs(data_dir, exist_ok=True)
 
         create_hydra_credentials(cli, credentials_dir)
+        ensure_devnet_hydra_wallet_funding(cli, cardano_home, args.network, i)
         protocol_params_path = generate_protocol_parameters(cli, os.path.join(credentials_dir, "protocol-params.json"))
 
         node_configs.append({
@@ -314,6 +509,7 @@ def bootstrap_hydra_nodes(args):
             "protocol_params_path": protocol_params_path
         })
     print(f"Successfully generated credentials for {args.no_of_nodes} hydra nodes on network {args.network}.")
+    ensure_local_hydra_scripts(cli, cardano_home, args.network, hydra_version, hydra_node_path)
 
     for config in node_configs:
         generate_and_save_hydra_run_script(
@@ -321,8 +517,7 @@ def bootstrap_hydra_nodes(args):
             network=args.network,
             cardano_home=cardano_home,
             node_bin_dir=node_bin_dir,
-            tx_id=tx_id,
-            testnet_magic=testnet_magic,
+            hydra_version=hydra_version,
             hydra_node_path=hydra_node_path,
             node_configs=node_configs
         )
@@ -334,17 +529,21 @@ def run_hydra_node(args):
     node_bin_dir = os.path.join(cardano_home, "bin")
     network = args.network if args.network else "preview"
     node_index = args.index
+    hydra_version = resolve_hydra_version(args)
+    download_and_setup_hydra(hydra_version, node_bin_dir)
 
     hydra_dir = os.path.join(cardano_home, network, f"hydra-{node_index}")
     run_script_path = os.path.join(hydra_dir, "run.sh")
 
-    if os.path.exists(run_script_path) and os.access(run_script_path, os.X_OK):
+    if (
+        os.path.exists(run_script_path)
+        and os.access(run_script_path, os.X_OK)
+        and not run_script_needs_regeneration(run_script_path, network)
+    ):
         print(f"Executing existing run.sh for hydra node {node_index} on network {network}...")
         exec([run_script_path])
     else:
-        print(f"run.sh not found or not executable for node {node_index}. Generating and executing...")
-        
-        download_and_setup_hydra(HYDRA_VERSION, node_bin_dir)
+        print(f"run.sh is missing, outdated, or not executable for node {node_index}. Generating and executing...")
 
         cli = CardanoCLI(network=network,
                          executable=os.path.join(node_bin_dir, "cardano-cli"),
@@ -357,17 +556,11 @@ def run_hydra_node(args):
         os.makedirs(data_dir, exist_ok=True)
 
         create_hydra_credentials(cli, credentials_dir)
+        ensure_devnet_hydra_wallet_funding(cli, cardano_home, network, node_index)
         generate_protocol_parameters(cli, os.path.join(credentials_dir, "protocol-params.json"))
 
-        networks_data = fetch_network_json()
-        node_version = HYDRA_VERSION
-        tx_id_list = networks_data.get(network, {}).get(node_version, [])
-        if not isinstance(tx_id_list, str):
-            print(f"Error: Could not find transaction ID for {network}.{node_version} in the network configuration.")
-            sys.exit(1)
-        tx_id = tx_id_list
-        testnet_magic = 2 if network != "mainnet" else 0
         hydra_node_path = os.path.join(node_bin_dir, "hydra-node")
+        ensure_local_hydra_scripts(cli, cardano_home, network, hydra_version, hydra_node_path)
 
         existing_node_configs = []
         network_dir = os.path.join(cardano_home, network)
@@ -417,8 +610,7 @@ def run_hydra_node(args):
             network=network,
             cardano_home=cardano_home,
             node_bin_dir=node_bin_dir,
-            tx_id=tx_id,
-            testnet_magic=testnet_magic,
+            hydra_version=hydra_version,
             hydra_node_path=hydra_node_path,
             node_configs=existing_node_configs
         ):

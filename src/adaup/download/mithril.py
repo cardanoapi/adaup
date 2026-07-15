@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import sys
+from urllib.parse import urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -46,6 +47,33 @@ def get_mithril_network_configuration(network):
 def check_mithril_client_present(executable_path):
     return os.path.isfile(executable_path) and os.access(executable_path, os.X_OK)
 
+
+def validate_mithril_installation(mithril_client_path):
+    if not check_mithril_client_present(mithril_client_path):
+        raise RuntimeError(
+            f"mithril-client executable not found at {mithril_client_path}"
+        )
+
+    try:
+        subprocess.run(
+            [mithril_client_path, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"mithril-client exists at {mithril_client_path} but is not executable: {exc}"
+        ) from exc
+
+
+def _shell_for_installer():
+    for shell in ("bash", "/bin/bash", "sh", "/bin/sh"):
+        resolved = shutil.which(shell) if "/" not in shell else shell
+        if resolved and os.path.exists(resolved):
+            return resolved
+    return None
+
 def download_and_setup_mithril(bin_dir, distribution=DEFAULT_MITHRIL_DISTRIBUTION):
     """
     Download and set up the Mithril client binary with the official installer.
@@ -58,19 +86,31 @@ def download_and_setup_mithril(bin_dir, distribution=DEFAULT_MITHRIL_DISTRIBUTIO
         print(f"Mithril client already exists at {mithril_client_path}. Skipping download.")
         return mithril_client_path
 
+    shell = _shell_for_installer()
+    if shell is None:
+        print("Error setting up Mithril client: unable to find a shell for the installer.")
+        sys.exit(1)
+
     installer_cmd = (
         "curl --proto '=https' --tlsv1.2 -sSf "
         "https://raw.githubusercontent.com/input-output-hk/mithril/main/mithril-install.sh "
         f"| sh -s -- -c mithril-client -d {distribution} -p {bin_dir}"
     )
     try:
-        subprocess.run(["bash", "-lc", installer_cmd], check=True)
+        subprocess.run([shell, "-lc", installer_cmd], check=True)
     except subprocess.CalledProcessError as e:
         print(f"Error setting up Mithril client: {str(e)}")
         sys.exit(1)
 
-    if not check_mithril_client_present(mithril_client_path):
-        print(f"Error: mithril-client executable not found at {mithril_client_path}")
+    try:
+        validate_mithril_installation(mithril_client_path)
+    except RuntimeError as exc:
+        print(f"Error setting up Mithril client: {exc}")
+        parsed = urlparse("https://raw.githubusercontent.com/input-output-hk/mithril/main/mithril-install.sh")
+        print(
+            "Installer source: "
+            f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        )
         sys.exit(1)
 
     print(f"Mithril client setup complete. Executable at: {mithril_client_path}")

@@ -1,37 +1,36 @@
-
-
 ## Installation
 
-**⚠️ Warning:** Only **x86/64 Linux** platform is supported.
+Officially supported platforms:
 
+- Linux `x86_64`
+- Linux `arm64`
+- macOS Apple Silicon `arm64`
 
+Intel macOS is currently out of scope.
 
 ```bash
 pip install adaup
 ```
 
-#### SystemWide Installation
-```
+### System-Wide Installation
+
+```bash
 sudo pip install --upgrade adaup --break-system-packages
 ```
-After installation, the `cardano` executable will be available in your PATH.
+
+After installation, the `cardano` executable will be available in your `PATH`.
 
 ## Usage
 
-The `cardano` executable provides a command-line interface to manage Cardano and Hydra nodes.
+The `cardano` executable provides a command-line interface to manage Cardano nodes and related tooling.
 
 ### Running a Cardano Node
 
-To start a Cardano node for a specific network (e.g., `preview` or `preprod` or `mainnet` ), use the `node` command:
+Start a Cardano node for a specific network:
 
 ```bash
 cardano node preview
-```
-
-You can also specify a different network or node version:
-
-```bash
-cardano node mainnet 
+cardano node mainnet
 ```
 
 For a local single-node development network with prepackaged genesis material and an auto-funded default wallet in `~/.cardano/keys`, use:
@@ -40,61 +39,30 @@ For a local single-node development network with prepackaged genesis material an
 cardano node devnet
 ```
 
-This starts a local node at `~/.cardano/devnet/node.socket` using cardano-node `11.0.1`, regenerates `payment.*`, `stake.*` and `payment.addr` under `~/.cardano/keys` on each run, and funds that address with `1000000000000` lovelace (1,000,000 ADA) from the devnet faucet. The packaged devnet genesis funds the faucet with enough lovelace for repeated local bootstraps.
+This starts a local node at `~/.cardano/devnet/node.socket` using `cardano-node 11.0.1`, regenerates `payment.*`, `stake.*`, and `payment.addr` under `~/.cardano/keys` on each run, and funds that address with `1000000000000` lovelace (1,000,000 ADA) from the devnet faucet.
 
 ### Running Cardano CLI Commands
 
-To execute `cardano-cli` commands, use the `cli` subcommand followed by the `cardano-cli` arguments:
+Use the `cli` subcommand followed by regular `cardano-cli` arguments:
 
 ```bash
 export CARDANO_NODE_SOCKET_PATH=~/.cardano/preview/node.socket
 cardano cli query tip --testnet-magic 2
-cardano cli query tip --testnet-magic=2 --socket-path=~/.cardano/preview/node.socket ## socket path in the cli
+cardano cli query tip --testnet-magic=2 --socket-path=~/.cardano/preview/node.socket
 ```
 
-### Running a Hydra Cluster
+## Additional Guides
 
-To set up and run a Hydra cluster:
+- Hydra cluster setup and operations: [Hydra Guide](docs/hydra.md)
 
-1.  **Bootstrap Hydra Node Credentials:**
-    Generate the necessary folders and credentials for your Hydra nodes. This will create `hydra-{n}` directories under `$HOME/.cardano/<network_name>/`.
+## Binary Sources
 
-    **e.g.** this will generate configuration for running 2 hydra nodes.
-    ```bash
-    cardano hydra bootstrap preview  2
-    ```
+- `cardano node` and `cardano cli` use official GitHub release assets from `IntersectMBO/cardano-node`.
+- `cardano mithril` uses the official Mithril installer script.
+- `cardano hydra` resolves binaries in this order:
+  1. `ADAUP_HYDRA_NODE_PATH` and `ADAUP_HYDRA_TUI_PATH`
+  2. Existing `hydra-node` and `hydra-tui` in `PATH`
+  3. `ADAUP_HYDRA_DOWNLOAD_URL`
+  4. GitHub Actions artifacts from `ADAUP_HYDRA_ACTIONS_RUN_URL`
 
-2.  **Start 1st Hydra Node:**
-    
-
-    ```bash
-    cardano hydra node preview  0
-    ```
-2.  **Start 2nd Hydra Node in different terminal:**
-    
-
-    ```bash
-    cardano hydra node preview  1
-    ```
-    **Note** the command to run this node is available at `~/.cardano/preview/hydra-0/run.sh`
-
-3.  **Watch hydra status in  Hydra TUI :**
-    To interact with a running Hydra node, you can open the Text User Interface (TUI):
-
-    ```bash
-    cardano hydra tui  0
-    ```
-
-4.  **Reset Hydra Head Data :**
-    Shutdown you nodes, and use `reset` command to restart a new hydra head with same configurations. You can then start the nodes again.
-
-    ```bash
-    cardano hydra reset preview
-    ```
-
-5.  **Prune Hydra Cluster :**
-    To remove all keys, data and cluster information. You need to `bootstrap` the cluster again.
-
-    ```bash
-    cardano hydra prune preview
-    ```
+For Hydra Actions artifacts, `adaup` resolves the artifact from the public GitHub Actions run and downloads it through a public `nightly.link` URL. The default bundled Hydra version `2.2.0` points to the successful release run `27418396480`.

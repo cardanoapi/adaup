@@ -1,6 +1,5 @@
 import os
 import sys
-import platform
 import zipfile
 import json
 import re
@@ -13,6 +12,7 @@ import tqdm
 
 # Import executor helper from exec module
 from .exec import executor
+from .platforms import detect_platform
 
 DEFAULT_CARDANO_NODE_VERSION = "11.0.1"
 
@@ -138,36 +138,10 @@ def resolve_cardano_node_release(node_version):
     """
     Resolve the correct release asset URL for the current platform.
     """
-    current_platform = platform.system().lower()
-    machine = platform.machine().lower()
-
-    if current_platform == "linux":
-        extension = ".tar.gz"
-        if machine in ("x86_64", "amd64"):
-            platform_suffix = "linux-amd64"
-        elif machine in ("aarch64", "arm64"):
-            platform_suffix = "linux-arm64"
-        else:
-            print(f"Unsupported Linux architecture: {machine}")
-            sys.exit(1)
-    elif current_platform == "darwin":
-        extension = ".tar.gz"
-        if machine in ("x86_64", "amd64"):
-            platform_suffix = "macos-amd64"
-        elif machine in ("arm64", "aarch64"):
-            platform_suffix = "macos-arm64"
-        else:
-            print(f"Unsupported macOS architecture: {machine}")
-            sys.exit(1)
-    elif current_platform in ["windows", "cygwin"]:
-        extension = ".zip"
-        if machine in ("x86_64", "amd64"):
-            platform_suffix = "win-amd64"
-        else:
-            print(f"Unsupported Windows architecture: {machine}")
-            sys.exit(1)
-    else:
-        print(f"Unsupported platform: {current_platform}")
+    try:
+        platform_info = detect_platform()
+    except ValueError as exc:
+        print(f"Error resolving cardano-node platform: {exc}")
         sys.exit(1)
 
     release_api_url = (
@@ -184,7 +158,7 @@ def resolve_cardano_node_release(node_version):
         print(f"Error resolving Cardano node release metadata: {str(e)}")
         sys.exit(1)
 
-    expected_asset_name = f"cardano-node-{node_version}-{platform_suffix}{extension}"
+    expected_asset_name = build_cardano_node_asset_name(node_version, platform_info)
     for asset in release.get("assets", []):
         if asset.get("name") == expected_asset_name:
             return expected_asset_name, asset.get("browser_download_url")
@@ -193,6 +167,13 @@ def resolve_cardano_node_release(node_version):
         f"Could not find release asset {expected_asset_name} for cardano-node {node_version}."
     )
     sys.exit(1)
+
+
+def build_cardano_node_asset_name(node_version, platform_info):
+    return (
+        f"cardano-node-{node_version}-"
+        f"{platform_info.cardano_suffix}{platform_info.cardano_extension}"
+    )
 
 def download_and_setup_cardano_node(node_version, cardano_home, node_bin_dir):
     """
