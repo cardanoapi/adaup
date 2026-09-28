@@ -45,13 +45,13 @@ jobs:
           version = "${{ github.ref }}".removeprefix("refs/tags/v")
           setup_py = Path("setup.py")
           content = setup_py.read_text()
-          updated = re.sub(
+          updated, found = re.subn(
               r"version\s*=\s*['\"][^'\"]*['\"]",
               f"version='{version}'",
               content,
               count=1,
           )
-          if updated == content:
+          if not found:
               raise SystemExit("Failed to update version in setup.py")
           setup_py.write_text(updated)
           PY
