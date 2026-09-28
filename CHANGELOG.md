@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `cardano devnet --docker` (`up`, `down`, `status`, `smoke`): Conway devnet in docker with fresh genesis per run, governance-ready committee and constitution, kuber, cardano-db-sync + postgres and an anchor file server. See `docs/devnet-docker.md`.
+- `cardano devnet smoke --docker`: governance smoke test and seeder covering DRep, delegation, committee and every proposal type.
+- `ADAUP_DEVNET_*` environment overrides for the native devnet: slot length, epoch length, active slots coefficient, security parameter and starting protocol version.
+
+### Fixed
+- macOS: re-sign downloaded cardano-node binaries ad hoc, since the 11.1.2 macos-arm64 release is killed on launch otherwise.
+- `python_requires` raised to 3.10, which the code already needed.
+
 ## Version 0.1.5
 
 ### Changed

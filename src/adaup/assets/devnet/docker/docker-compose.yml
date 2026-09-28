@@ -1,0 +1,203 @@
+# Docker devnet stack rendered by `cardano devnet up --docker`.
+#
+# Every value comes from the .env file that adaup writes next to this file, so
+# the stack can be driven with plain `docker compose` from the devnet directory.
+# Other compose projects can join the `${ADAUP_DEVNET_NETWORK}` network and mount
+# the `${ADAUP_DEVNET_NETWORK}-ipc` (node.socket) and `${ADAUP_DEVNET_NETWORK}-config`
+# (node + db-sync config, genesis files) volumes as external volumes.
+
+name: ${ADAUP_DEVNET_PROJECT}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "5m"
+    max-file: "3"
+
+services:
+  # Copies the generated configuration into the shared config volume and hands
+  # the node volumes to the host user, so nothing root-owned lands in the
+  # devnet directory on the host.
+  devnet-init:
+    image: ${ADAUP_DEVNET_NODE_IMAGE}
+    entrypoint: ["bash", "-c"]
+    command:
+      - >-
+        rm -rf /config/* &&
+        cp -r /devnet/config/. /config/ &&
+        chown -R ${ADAUP_DEVNET_UID}:${ADAUP_DEVNET_GID} /config /ipc /db &&
+        chmod -R a+rX /config
+    volumes:
+      - ${ADAUP_DEVNET_DIR}:/devnet:ro
+      - config:/config
+      - ipc:/ipc
+      - node-db:/db
+    restart: "no"
+    logging: *logging
+
+  cardano-node:
+    image: ${ADAUP_DEVNET_NODE_IMAGE}
+    user: "${ADAUP_DEVNET_UID}:${ADAUP_DEVNET_GID}"
+    entrypoint: ["cardano-node"]
+    command:
+      - run
+      - --config=/config/cardano-node.json
+      - --topology=/config/topology.json
+      - --database-path=/db
+      - --socket-path=/ipc/node.socket
+      - --host-addr=0.0.0.0
+      - --port=3001
+      - --shelley-kes-key=/devnet/keys/pool/kes.skey
+      - --shelley-vrf-key=/devnet/keys/pool/vrf.skey
+      - --shelley-operational-certificate=/devnet/keys/pool/opcert.cert
+      - --byron-delegation-certificate=/devnet/keys/pool/byron-delegation.cert
+      - --byron-signing-key=/devnet/keys/pool/byron-delegate.key
+    environment:
+      CARDANO_NODE_SOCKET_PATH: /ipc/node.socket
+      CARDANO_NODE_NETWORK_ID: "${ADAUP_DEVNET_MAGIC}"
+      HOME: /tmp
+    volumes:
+      # Read-write so `cardano devnet smoke` can keep its keys and transactions
+      # on the host; the node itself only reads the pool keys from here.
+      - ${ADAUP_DEVNET_DIR}:/devnet
+      - config:/config:ro
+      - ipc:/ipc
+      - node-db:/db
+    depends_on:
+      devnet-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "cardano-cli", "query", "tip", "--testnet-magic", "${ADAUP_DEVNET_MAGIC}", "--socket-path", "/ipc/node.socket"]
+      interval: 3s
+      timeout: 10s
+      retries: 100
+      start_period: 5s
+    stop_grace_period: 20s
+    restart: unless-stopped
+    logging: *logging
+
+  kuber:
+    image: ${ADAUP_DEVNET_KUBER_IMAGE}
+    profiles: ["kuber"]
+    environment:
+      NETWORK: "${ADAUP_DEVNET_MAGIC}"
+      CARDANO_NODE_SOCKET_PATH: /ipc/node.socket
+    volumes:
+      - ipc:/ipc
+    ports:
+      - "${ADAUP_DEVNET_BIND}:${ADAUP_DEVNET_KUBER_PORT}:8081"
+    depends_on:
+      cardano-node:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8081 &&
+          printf 'GET /api/v3/protocol-params HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
+          head -n 1 <&3 | grep -q ' 200'
+      interval: 3s
+      timeout: 5s
+      retries: 60
+      start_period: 5s
+    restart: unless-stopped
+    logging: *logging
+
+  postgres:
+    image: ${ADAUP_DEVNET_POSTGRES_IMAGE}
+    profiles: ["dbsync"]
+    environment:
+      POSTGRES_USER: ${ADAUP_DEVNET_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${ADAUP_DEVNET_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${ADAUP_DEVNET_POSTGRES_DB}
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB", "-c", "fsync=off", "-c", "synchronous_commit=off"]
+    shm_size: 256m
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${ADAUP_DEVNET_BIND}:${ADAUP_DEVNET_POSTGRES_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    restart: unless-stopped
+    logging: *logging
+
+  db-sync:
+    image: ${ADAUP_DEVNET_DBSYNC_IMAGE}
+    profiles: ["dbsync"]
+    platform: linux/amd64
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${ADAUP_DEVNET_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${ADAUP_DEVNET_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${ADAUP_DEVNET_POSTGRES_DB}
+      PGPASSWORD: ${ADAUP_DEVNET_POSTGRES_PASSWORD}
+    # --force-indexes: create indexes before syncing. On a fresh devnet db-sync is
+    #   "near tip" from the first block and otherwise deadlocks creating them
+    #   while its own insert transaction holds the table locks.
+    # --allow-private-offchain-urls: anchors are served from this private network.
+    command:
+      - --config=/config/db-sync-config.json
+      - --socket-path=/node-ipc/node.socket
+      - --force-indexes
+      - --allow-private-offchain-urls
+    volumes:
+      - config:/config:ro
+      - ipc:/node-ipc
+      - dbsync-state:/var/lib/cexplorer
+    depends_on:
+      cardano-node:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test "$$(psql -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -tAc
+          'select 1 from block where block_no is not null limit 1')" = 1
+      interval: 3s
+      timeout: 5s
+      retries: 100
+      start_period: 10s
+    stop_grace_period: 20s
+    restart: unless-stopped
+    logging: *logging
+
+  # Static file server for governance anchors (CIP-100/108/119 documents) so
+  # db-sync can fetch off-chain vote data from inside the network at
+  # http://anchors:8080/<file>.
+  anchors:
+    image: ${ADAUP_DEVNET_NODE_IMAGE}
+    user: "${ADAUP_DEVNET_UID}:${ADAUP_DEVNET_GID}"
+    entrypoint: ["socat", "TCP-LISTEN:8080,fork,reuseaddr", "EXEC:bash /srv/anchor-server.sh"]
+    environment:
+      ANCHOR_ROOT: /www
+    volumes:
+      - ${ADAUP_DEVNET_DIR}/anchors:/www:ro
+      - ${ADAUP_DEVNET_DIR}/config/anchor-server.sh:/srv/anchor-server.sh:ro
+    ports:
+      - "${ADAUP_DEVNET_BIND}:${ADAUP_DEVNET_ANCHOR_PORT}:8080"
+    restart: unless-stopped
+    logging: *logging
+
+networks:
+  default:
+    name: ${ADAUP_DEVNET_NETWORK}
+
+volumes:
+  config:
+    name: ${ADAUP_DEVNET_NETWORK}-config
+  ipc:
+    name: ${ADAUP_DEVNET_NETWORK}-ipc
+  node-db:
+    name: ${ADAUP_DEVNET_NETWORK}-node-db
+  pgdata:
+    name: ${ADAUP_DEVNET_NETWORK}-pgdata
+  dbsync-state:
+    name: ${ADAUP_DEVNET_NETWORK}-dbsync-state

@@ -56,6 +56,8 @@ def _prepare_devnet_configs(config_dir):
     with open(byron_genesis, "r", encoding="utf-8") as file:
         byron_data = json.load(file)
     byron_data["startTime"] = int(time.time())
+    if os.environ.get("ADAUP_DEVNET_SECURITY_PARAM"):
+        byron_data["protocolConsts"]["k"] = int(os.environ["ADAUP_DEVNET_SECURITY_PARAM"])
     with open(byron_genesis, "w", encoding="utf-8") as file:
         json.dump(byron_data, file, indent=4)
 
@@ -63,6 +65,19 @@ def _prepare_devnet_configs(config_dir):
     with open(shelley_genesis, "r", encoding="utf-8") as file:
         shelley_data = json.load(file)
     shelley_data["systemStart"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for env_name, key, cast in (
+        ("ADAUP_DEVNET_SLOT_LENGTH", "slotLength", float),
+        ("ADAUP_DEVNET_EPOCH_LENGTH", "epochLength", int),
+        ("ADAUP_DEVNET_ACTIVE_SLOTS_COEFF", "activeSlotsCoeff", float),
+        ("ADAUP_DEVNET_SECURITY_PARAM", "securityParam", int),
+    ):
+        if os.environ.get(env_name):
+            shelley_data[key] = cast(os.environ[env_name])
+    if os.environ.get("ADAUP_DEVNET_PROTOCOL_MAJOR"):
+        shelley_data["protocolParams"]["protocolVersion"] = {
+            "major": int(os.environ["ADAUP_DEVNET_PROTOCOL_MAJOR"]),
+            "minor": 0,
+        }
     with open(shelley_genesis, "w", encoding="utf-8") as file:
         json.dump(shelley_data, file, indent=4)
 

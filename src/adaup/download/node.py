@@ -175,6 +175,23 @@ def build_cardano_node_asset_name(node_version, platform_info):
         f"{platform_info.cardano_suffix}{platform_info.cardano_extension}"
     )
 
+def adhoc_resign_macos_binaries(node_bin_dir):
+    """
+    Some macOS release archives ship binaries whose ad-hoc signature no longer
+    matches the file (e.g. 11.1.2 arm64), so the kernel SIGKILLs them on launch.
+    Re-sign every executable and dylib ad hoc so they can run.
+    """
+    if sys.platform != "darwin" or shutil.which("codesign") is None:
+        return
+    for name in os.listdir(node_bin_dir):
+        path = os.path.join(node_bin_dir, name)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            subprocess.run(
+                ["codesign", "--force", "--sign", "-", path],
+                capture_output=True,
+                check=False,
+            )
+
 def download_and_setup_cardano_node(node_version, cardano_home, node_bin_dir):
     """
     Download and set up the Cardano node binaries.
@@ -235,6 +252,7 @@ def download_and_setup_cardano_node(node_version, cardano_home, node_bin_dir):
             print(f"Error: cardano-node executable not found at expected path: {node_bin_path}")
             sys.exit(1)
         else:
+            adhoc_resign_macos_binaries(node_bin_dir)
             print(f"Cardano node executable is at: {node_bin_path}")
         return node_bin_path
 

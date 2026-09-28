@@ -117,6 +117,49 @@ def main():
         help="The network for which to reset hydra node data (default: mainnet)"
     )
 
+    # Devnet command
+    parser_devnet = subparsers.add_parser(
+        "devnet",
+        help="Run a local devnet (use --docker for the docker stack with kuber and db-sync)",
+        description=(
+            "Run a local Conway devnet. With --docker the node, kuber, db-sync, postgres and an "
+            "anchor file server run in docker; most options can also be set through the "
+            "ADAUP_DEVNET_* environment variable of the same name."
+        ),
+    )
+    parser_devnet.add_argument(
+        "action",
+        nargs="?",
+        default="up",
+        choices=["up", "down", "status", "smoke"],
+        help="up (default): start a fresh devnet; down: remove it; status: show it; smoke: run the governance smoke test",
+    )
+    parser_devnet.add_argument("--docker", action="store_true", help="Run the devnet in docker")
+    parser_devnet.add_argument("--dir", default=None, help="Devnet output directory (default: ~/.cardano/devnet-docker)")
+    parser_devnet.add_argument("--slot-length", type=float, default=None, help="Slot length in seconds (default 0.2)")
+    parser_devnet.add_argument("--epoch-length", type=int, default=None, help="Epoch length in slots (default 300)")
+    parser_devnet.add_argument("--active-slots-coeff", type=float, default=None, help="Active slots coefficient (default 0.25)")
+    parser_devnet.add_argument("--security-param", type=int, default=None, help="Security parameter k (default 10)")
+    parser_devnet.add_argument("--gov-action-lifetime", type=int, default=None,
+                               help="Governance action lifetime in epochs (default: about 2h of wall-clock time)")
+    parser_devnet.add_argument("--drep-activity", type=int, default=None,
+                               help="DRep activity in epochs (default: about 2h of wall-clock time)")
+    parser_devnet.add_argument("--no-kuber", dest="kuber", action="store_const", const=False, default=None,
+                               help="Do not start kuber")
+    parser_devnet.add_argument("--no-dbsync", dest="dbsync", action="store_const", const=False, default=None,
+                               help="Do not start db-sync and postgres")
+    parser_devnet.add_argument("-d", "--detach", action="store_true",
+                               help="Return once the node produces blocks instead of following the logs")
+    parser_devnet.add_argument("--wait", action="store_true", help="Also wait until kuber and db-sync are healthy")
+    parser_devnet.add_argument("--actions", default=None,
+                               help="smoke: comma separated proposals to create (default: all of "
+                                    "info,treasury,parameter,hardfork,no-confidence,committee,constitution)")
+    parser_devnet.add_argument("--ratify", default=None,
+                               help="smoke: proposals that get enough yes votes to be enacted "
+                                    "(default: treasury,parameter,committee,constitution)")
+    parser_devnet.add_argument("--no-wait-enactment", dest="wait_enactment", action="store_false",
+                               help="smoke: return after voting instead of waiting for enactment")
+
     # CLI command
     parser_cli = subparsers.add_parser("cli", help="Run cardano-cli")
     # We don't add arguments here for cardano-cli as they will be passed directly
@@ -129,6 +172,8 @@ def main():
     if known_args.command == "node":
         from .commands.cardano_node import start
         start(known_args.version, known_args.network)
+    elif known_args.command == "devnet":
+        run_devnet(known_args, parser_devnet)
     elif known_args.command == "cli":
         from adaup.commands.cardano_cli import run
         # Pass all remaining arguments directly to cardano-cli
@@ -156,6 +201,44 @@ def main():
             parser.print_help()
     else:
         parser.print_help()
+
+def run_devnet(args, parser):
+    if not args.docker:
+        if args.action != "up":
+            parser.error(f"'{args.action}' is only available for the docker devnet (add --docker)")
+        from .commands.devnet import start_devnet
+        start_devnet()
+        return
+
+    from .commands import devnet_docker
+    overrides = {
+        name: getattr(args, name)
+        for name in (
+            "dir", "slot_length", "epoch_length", "active_slots_coeff", "security_param",
+            "gov_action_lifetime", "drep_activity", "kuber", "dbsync",
+        )
+    }
+    try:
+        settings = devnet_docker.load_settings(overrides)
+    except ValueError as error:
+        parser.error(str(error))
+
+    if args.action != "up":
+        settings = devnet_docker.load_saved_settings(settings)
+
+    try:
+        if args.action == "up":
+            devnet_docker.devnet_up(settings, detach=args.detach, wait=args.wait)
+        elif args.action == "down":
+            devnet_docker.devnet_down(settings)
+        elif args.action == "status":
+            devnet_docker.devnet_status(settings)
+        elif args.action == "smoke":
+            from .commands.devnet_smoke import run_smoke
+            run_smoke(settings, actions=args.actions, ratify=args.ratify, wait_enactment=args.wait_enactment)
+    except RuntimeError as error:
+        print(f"Error: {error}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

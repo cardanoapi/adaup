@@ -41,6 +41,18 @@ cardano node devnet
 
 This starts a local node at `~/.cardano/devnet/node.socket` using `cardano-node 11.0.1`, regenerates `payment.*`, `stake.*`, and `payment.addr` under `~/.cardano/keys` on each run, and funds that address with `1000000000000` lovelace (1,000,000 ADA) from the devnet faucet.
 
+### Docker Devnet
+
+For an isolated Conway devnet with working governance, kuber and cardano-db-sync, needing only docker:
+
+```bash
+cardano devnet up --docker -d --wait   # fresh genesis every run
+cardano devnet smoke --docker          # register DReps, submit and vote on every governance action
+cardano devnet down --docker
+```
+
+Keys (faucet, pool, committee), configuration and the rendered `docker-compose.yml` are written to `~/.cardano/devnet-docker`. Options, `ADAUP_DEVNET_*` variables and how to attach other compose projects: [Docker Devnet Guide](docs/devnet-docker.md).
+
 ### Running Cardano CLI Commands
 
 Use the `cli` subcommand followed by regular `cardano-cli` arguments:
@@ -54,6 +66,7 @@ cardano cli query tip --testnet-magic=2 --socket-path=~/.cardano/preview/node.so
 ## Additional Guides
 
 - Hydra cluster setup and operations: [Hydra Guide](docs/hydra.md)
+- Docker devnet with kuber and db-sync: [Docker Devnet Guide](docs/devnet-docker.md)
 
 ## Binary Sources
 
