@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Version 0.3.0
 
 ### Added
 - `cardano devnet --docker` (`up`, `down`, `status`, `smoke`): Conway devnet in docker with fresh genesis per run, governance-ready committee and constitution, kuber, cardano-db-sync + postgres and an anchor file server. See `docs/devnet-docker.md`.
