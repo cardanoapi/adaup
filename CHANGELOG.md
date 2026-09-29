@@ -7,7 +7,7 @@
 - `ADAUP_DEVNET_KOIOS_PORT`, `_KOIOS_POSTGRES_BASE`, `_KOIOS_POSTGRES_IMAGE` (use your own Postgres with pg_cardano, skipping the build), `_PG_CARDANO_URL` (download mirror), `_POSTGREST_IMAGE` and `_KOIOS_PROXY_IMAGE` settings; a `koios` entry in `devnet.json`.
 
 ### Changed
-- **Breaking:** db-sync on the docker devnet now runs with `tx_out.use_address_table: true` and `tx_cbor: enable`, the settings Koios's SQL expects. The database schema differs from 0.3.0: addresses are in the `address` table (`tx_out.address_id`), and `tx_out.address` no longer exists. `tx_out.stake_address_id` is unchanged. To read an address, join `address` on `tx_out.address_id`.
+- **Breaking:** db-sync on the docker devnet now runs with `tx_out.value: consumed`, `tx_out.use_address_table: true` and `tx_cbor: enable`, the settings Koios's SQL expects. The database schema differs from 0.3.0: addresses are in the `address` table (`tx_out.address_id`), and `tx_out.address` no longer exists. `tx_out.stake_address_id` is unchanged. To read an address, join `address` on `tx_out.address_id`. In `consumed` mode db-sync sets `tx_out.consumed_by_tx_id` on spent outputs and does not fill `tx_in`; Koios's balance functions rely on that column.
 
 ## Version 0.3.0
 

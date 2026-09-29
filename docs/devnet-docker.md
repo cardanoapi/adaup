@@ -112,9 +112,10 @@ The gRest SQL is CC BY 4.0 (`assets/devnet/docker/koios/NOTICE`).
 
 ## db-sync configuration
 
-`config/db-sync-config.json` is db-sync's `insert_options` with `tx_out.use_address_table: true`,
-`tx_cbor: enable`, `ledger: enable` and `governance: enable`, plus off-chain pool and vote data.
-The first two are what Koios's SQL indexes and reads; they are on for every devnet, with or
+`config/db-sync-config.json` is db-sync's `insert_options` with `tx_out.value: consumed`,
+`tx_out.use_address_table: true`, `tx_cbor: enable`, `ledger: enable` and `governance: enable`, plus
+off-chain pool and vote data. The first three are what Koios's SQL indexes and reads (its balance
+functions sum `tx_out` rows whose `consumed_by_tx_id` is null, so `enable` would count spent outputs); they are on for every devnet, with or
 without `--koios`, so the database is the same shape either way. With the address table on,
 `tx_out.stake_address_id` still exists but the address text is in `address`.
 

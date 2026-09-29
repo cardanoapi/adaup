@@ -101,6 +101,9 @@ class DockerDevnetSettingsTests(unittest.TestCase):
         # Koios's SQL indexes the address table and reads transaction CBOR, and its
         # governance and stake functions need ledger state and governance data.
         self.assertTrue(options["tx_out"]["use_address_table"])
+        # gRest's balance functions read tx_out.consumed_by_tx_id, which db-sync only
+        # sets in "consumed" mode. With "enable" every spent output counts as unspent.
+        self.assertEqual(options["tx_out"]["value"], "consumed")
         self.assertEqual(options["tx_cbor"], "enable")
         self.assertEqual(options["ledger"], "enable")
         self.assertEqual(options["governance"], "enable")

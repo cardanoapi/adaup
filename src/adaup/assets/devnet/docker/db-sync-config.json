@@ -9,7 +9,7 @@
   "insert_options": {
     "tx_cbor": "enable",
     "tx_out": {
-      "value": "enable",
+      "value": "consumed",
       "use_address_table": true
     },
     "ledger": "enable",
