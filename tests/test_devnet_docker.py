@@ -35,6 +35,30 @@ class DockerDevnetSettingsTests(unittest.TestCase):
         self.assertEqual(settings.profiles, [])
         self.assertEqual(settings.gov_action_lifetime, 40)
 
+    def test_koios_is_opt_in(self):
+        self.assertNotIn("koios", self.load().profiles)
+        settings = self.load(overrides={"koios": True})
+        self.assertEqual(settings.profiles, ["kuber", "dbsync", "koios"])
+        self.assertEqual(settings.koios_port, 8053)
+        # Koios needs the Postgres image that carries pg_cardano.
+        self.assertEqual(settings.postgres_image_in_use, "adaup-devnet-postgres-koios:pg17")
+        self.assertTrue(settings.builds_koios_postgres)
+        self.assertEqual(self.load().postgres_image_in_use, devnet_docker.POSTGRES_IMAGE)
+
+    def test_koios_from_env(self):
+        settings = self.load(env={"ADAUP_DEVNET_KOIOS": "1", "ADAUP_DEVNET_KOIOS_PORT": "9053"})
+        self.assertTrue(settings.koios)
+        self.assertEqual(settings.koios_port, 9053)
+
+    def test_koios_own_postgres_image_skips_the_build(self):
+        settings = self.load(overrides={"koios": True}, env={"ADAUP_DEVNET_KOIOS_POSTGRES_IMAGE": "mine/pg:17"})
+        self.assertFalse(settings.builds_koios_postgres)
+        self.assertEqual(settings.postgres_image_in_use, "mine/pg:17")
+
+    def test_koios_needs_dbsync(self):
+        with self.assertRaises(ValueError):
+            self.load(overrides={"koios": True, "dbsync": False})
+
     def test_explicit_lifetime(self):
         settings = self.load(env={"ADAUP_DEVNET_GOV_ACTION_LIFETIME": "7"})
         self.assertEqual(settings.gov_action_lifetime, 7)
@@ -61,6 +85,25 @@ class DockerDevnetSettingsTests(unittest.TestCase):
     def test_packaged_assets_exist(self):
         for name in ("docker-compose.yml", "db-sync-config.json", "anchor-server.sh"):
             self.assertTrue(os.path.isfile(devnet_docker._asset("docker", name)), name)
+
+    def test_packaged_koios_assets_exist(self):
+        for parts in (
+            ("Dockerfile.postgres",), ("init.sh",), ("cron.sh",), ("nginx.conf",), ("NOTICE",),
+            ("grest", "rpc", "db-scripts", "basics.sql"),
+            ("grest", "rpc", "governance", "drep_info.sql"),
+            ("grest", "cron", "epoch-info-cache-update.sh"),
+        ):
+            self.assertTrue(os.path.isfile(devnet_docker._asset("docker", "koios", *parts)), "/".join(parts))
+
+    def test_dbsync_config_is_what_gRest_expects(self):
+        config = devnet_docker._read_json(devnet_docker._asset("docker", "db-sync-config.json"))
+        options = config["insert_options"]
+        # Koios's SQL indexes the address table and reads transaction CBOR, and its
+        # governance and stake functions need ledger state and governance data.
+        self.assertTrue(options["tx_out"]["use_address_table"])
+        self.assertEqual(options["tx_cbor"], "enable")
+        self.assertEqual(options["ledger"], "enable")
+        self.assertEqual(options["governance"], "enable")
 
 
 class SmokeActionParsingTests(unittest.TestCase):

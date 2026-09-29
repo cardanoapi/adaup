@@ -1,0 +1,16 @@
+Third-party material used by the optional Koios profile (`cardano devnet up --docker --koios`).
+
+grest/rpc, grest/cron
+  The gRest SQL functions and cache-update jobs of Koios, from
+  https://github.com/cardano-community/koios-artifacts at release v1.4.2
+  (commit d10752be2fcbcb6bd8c29978646ace2830049da2), files/grest.
+  Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0),
+  https://creativecommons.org/licenses/by/4.0/
+  Changes: files/grest/rpc/db-scripts/reset_grest.sql is omitted and only the
+  five cron jobs that keep the cache tables current are included. The SQL and
+  the job scripts are otherwise unmodified.
+
+pg_cardano
+  Not bundled. Dockerfile.postgres downloads Koios's prebuilt pg_cardano
+  (https://github.com/cardano-community/pg_cardano, MIT) when the image is
+  built, and verifies its sha256 first.

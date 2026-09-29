@@ -21,7 +21,7 @@ cardano devnet down --docker             # remove containers, volumes and networ
 
 `up` options: `--dir`, `--slot-length`, `--epoch-length`, `--active-slots-coeff`,
 `--security-param`, `--gov-action-lifetime`, `--drep-activity`, `--no-kuber`, `--no-dbsync`,
-`-d/--detach`, `--wait`. Pass the same `--dir` to every command when not using the default.
+`--koios`, `-d/--detach`, `--wait`. Pass the same `--dir` to every command when not using the default.
 
 ## Environment
 
@@ -43,11 +43,12 @@ Command line flags win over environment variables, which win over the defaults.
 | `ADAUP_DEVNET_KEY_DEPOSIT_ADA` / `_POOL_DEPOSIT_ADA` | `2` / `500` |
 | `ADAUP_DEVNET_COMMITTEE_SIZE` / `_THRESHOLD` / `_MIN_SIZE` / `_MAX_TERM` | `3` / `2/3` / `0` / `10000` epochs |
 | `ADAUP_DEVNET_FAUCET_ADA` / `_POOL_STAKE_ADA` | `500000000` / `50000000` |
-| `ADAUP_DEVNET_KUBER` / `_DBSYNC` | `1` / `1` |
+| `ADAUP_DEVNET_KUBER` / `_DBSYNC` / `_KOIOS` | `1` / `1` / `0` |
 | `ADAUP_DEVNET_BIND` | `127.0.0.1` (host interface for published ports) |
-| `ADAUP_DEVNET_KUBER_PORT` / `_POSTGRES_PORT` / `_ANCHOR_PORT` | `8081` / `5433` / `8090` |
+| `ADAUP_DEVNET_KUBER_PORT` / `_POSTGRES_PORT` / `_ANCHOR_PORT` / `_KOIOS_PORT` | `8081` / `5433` / `8090` / `8053` |
 | `ADAUP_DEVNET_POSTGRES_USER` / `_PASSWORD` / `_DB` | `postgres` / `postgres` / `cexplorer` |
 | `ADAUP_DEVNET_NODE_IMAGE` / `_KUBER_IMAGE` / `_DBSYNC_IMAGE` / `_POSTGRES_IMAGE` | see `devnet_docker.py` |
+| `ADAUP_DEVNET_KOIOS_POSTGRES_BASE` / `_POSTGREST_IMAGE` / `_KOIOS_PROXY_IMAGE` | `postgres:17-bookworm` / `postgrest/postgrest:v14.10` / `nginx:1.27-alpine` |
 | `ADAUP_DEVNET_TIMEOUT` | `600` seconds for each wait |
 | `ADAUP_DEVNET_IPFS_GATEWAYS` | empty (db-sync's default); comma-separated gateways for db-sync's `ipfs_gateway` |
 
@@ -74,9 +75,52 @@ anchors/                    files served at http://anchors:8080/<name>
 smoke/                      smoke test wallets, DReps, transactions and result.json
 ```
 
+## Koios
+
+`--koios` (or `ADAUP_DEVNET_KOIOS=1`) also serves the devnet through the [Koios](https://koios.rest)
+REST API, at `http://127.0.0.1:8053/api/v1` (`http://koios/api/v1` in the network), so software
+written against Koios can be tried on a chain you control. It needs db-sync.
+
+```bash
+cardano devnet up --docker -d --wait --koios
+curl http://127.0.0.1:8053/api/v1/tip
+```
+
+It is the real gRest layer, not an imitation: Koios's SQL functions (`grest` schema, release
+v1.4.2, bundled in the package) run in the db-sync database, and PostgREST publishes them behind a
+small proxy that maps `/api/v1/<name>` to `/rpc/<name>`. Four extra services run under the `koios`
+profile:
+
+| Service | Does |
+| --- | --- |
+| `koios-init` | Creates the `pg_cardano` extension and the `grest` schema, fills `grest.genesis` from the devnet genesis files and applies the gRest SQL. Logs which files were applied and which failed. |
+| `koios-cron` | Runs Koios's cache-update jobs (epoch info, stake distribution, active stake, pool history and info) every 10 s, as Koios does from cron every few minutes. |
+| `postgrest` | PostgREST, configured as Koios configures it (`grest` schema, `web_anon`, 1000 rows). |
+| `koios` | nginx: `/api/v1/<name>` to `/rpc/<name>`, `/health`. |
+
+The first `up --koios` builds the Postgres image (`Dockerfile.postgres`, Debian Postgres 17 plus
+Koios's prebuilt `pg_cardano` 1.2.0, downloaded from `share.koios.rest` and checked against a pinned
+sha256), which takes a few minutes and needs the network; later runs reuse it. gRest's governance
+and pool functions call `pg_cardano`, so the stock `postgres:17-alpine` cannot serve them.
+
+Not started: the asset, address-book, submit and ogmios parts of a full Koios, and the jobs that need
+a cardano-cli or a public registry (`cli-protocol-params`, `populate-next-epoch-nonce`, token
+registry). The functions exist in the database, but endpoints that read what those jobs fill are
+empty.
+
+The gRest SQL is CC BY 4.0 (`assets/devnet/docker/koios/NOTICE`).
+
+## db-sync configuration
+
+`config/db-sync-config.json` is db-sync's `insert_options` with `tx_out.use_address_table: true`,
+`tx_cbor: enable`, `ledger: enable` and `governance: enable`, plus off-chain pool and vote data.
+The first two are what Koios's SQL indexes and reads; they are on for every devnet, with or
+without `--koios`, so the database is the same shape either way. With the address table on,
+`tx_out.stake_address_id` still exists but the address text is in `address`.
+
 ## Joining the stack from another compose project
 
-Everything runs on the docker network `adaup-devnet` with these service names:
+Everything runs on the docker network `adaup-devnet` with these service names (`koios` only with `--koios`):
 
 - `cardano-node`: node-to-node port 3001; socket at `/ipc/node.socket` in volume `adaup-devnet-ipc`
 - `kuber`: `http://kuber:8081` (host `127.0.0.1:8081`)

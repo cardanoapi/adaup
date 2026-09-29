@@ -7,10 +7,10 @@
   "PrometheusPort": 8080,
   "RequiresNetworkMagic": "RequiresMagic",
   "insert_options": {
-    "tx_cbor": "disable",
+    "tx_cbor": "enable",
     "tx_out": {
       "value": "enable",
-      "use_address_table": false
+      "use_address_table": true
     },
     "ledger": "enable",
     "shelley": {

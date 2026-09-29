@@ -1,0 +1,82 @@
+CREATE OR REPLACE FUNCTION grest.proposal_list()
+RETURNS TABLE (
+  block_time integer,
+  proposal_id text,
+  proposal_tx_hash text,
+  proposal_index integer,
+  proposal_type text,
+  proposal_description jsonb,
+  previous_gov_action_proposal_id text,
+  deposit text,
+  return_address text,
+  proposed_epoch integer,
+  ratified_epoch integer,
+  enacted_epoch integer,
+  dropped_epoch integer,
+  expired_epoch integer,
+  expiration integer,
+  meta_url text,
+  meta_hash text,
+  meta_json jsonb,
+  meta_comment text,
+  meta_language text,
+  meta_is_valid boolean,
+  withdrawal jsonb,
+  param_proposal jsonb
+)
+LANGUAGE sql STABLE
+AS $$
+  SELECT
+    EXTRACT(EPOCH FROM b.time)::integer,
+    grest.cip129_to_gov_action_id(tx.hash, gap.index),
+    ENCODE(tx.hash, 'hex'),
+    gap.index,
+    gap.type,
+    gap.description,
+    CASE
+      WHEN gap.prev_gov_action_proposal IS NULL THEN NULL
+      ELSE grest.cip129_to_gov_action_id(prev_tx.hash, prev_gap.index)
+    END AS previous_gov_action_proposal_id,
+    gap.deposit::text,
+    grest.cip5_hex_to_stake_addr(sa.hash_raw)::text,
+    b.epoch_no,
+    gap.ratified_epoch,
+    gap.enacted_epoch,
+    gap.dropped_epoch,
+    gap.expired_epoch,
+    gap.expiration,
+    va.url,
+    ENCODE(va.data_hash, 'hex'),
+    ocvd.json,
+    ocvd.comment,
+    ocvd.language,
+    ocvd.is_valid,
+    (SELECT COALESCE(JSON_AGG(JSON_BUILD_OBJECT(
+        'stake_address', (
+            SELECT grest.cip5_hex_to_stake_addr(sa2.hash_raw)::text
+            FROM stake_address AS sa2
+            WHERE sa2.id = tw.stake_address_id
+          ),
+        'amount', tw.amount::text
+        ))::jsonb, '[]'::jsonb)
+        FROM public.treasury_withdrawal tw WHERE tw.gov_action_proposal_id = gap.id
+    ) AS withdrawal,
+    CASE
+      WHEN pp.id IS NULL THEN NULL
+      ELSE ( SELECT JSONB_STRIP_NULLS(TO_JSONB(pp.*)) - array['id','registered_tx_id','epoch_no'] )
+    END AS param_proposal
+  FROM public.gov_action_proposal AS gap
+    INNER JOIN public.tx ON gap.tx_id = tx.id
+    INNER JOIN public.block AS b ON tx.block_id = b.id
+    INNER JOIN public.stake_address AS sa ON gap.return_address = sa.id
+    LEFT JOIN public.param_proposal AS pp ON gap.param_proposal = pp.id
+    LEFT JOIN public.cost_model AS cm ON cm.id = pp.cost_model_id
+    LEFT JOIN public.voting_anchor AS va ON gap.voting_anchor_id = va.id
+    LEFT JOIN public.off_chain_vote_data AS ocvd ON va.id = ocvd.voting_anchor_id
+    LEFT JOIN public.gov_action_proposal AS prev_gap ON gap.prev_gov_action_proposal = prev_gap.id
+    LEFT JOIN public.tx AS prev_tx ON prev_gap.tx_id = prev_tx.id
+  ORDER BY
+    b.time DESC;
+$$;
+
+COMMENT ON FUNCTION grest.proposal_list IS 'Get a raw listing of all governance proposals'; --noqa: LT01

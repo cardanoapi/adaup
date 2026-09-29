@@ -1,0 +1,38 @@
+# Postgres 17 with the pg_cardano extension, which gRest's governance and pool
+# functions call (cardano.bech32_encode, cardano.bech32_decode_data, ...).
+#
+# The extension is Koios's prebuilt pg_cardano, downloaded from the same URL
+# Koios's own setup-grest.sh uses and verified against a pinned sha256 before
+# anything is installed. It ships builds for Postgres 15-18, so the base image
+# must be Postgres 17 on glibc (Debian), not Alpine.
+#
+# The image also carries curl and jq for the init script.
+ARG POSTGRES_BASE=postgres:17-bookworm
+FROM ${POSTGRES_BASE}
+
+ARG PG_CARDANO_VERSION=1.2.0
+# Mirror override: a full tarball URL for the architecture being built. The sha256
+# below still has to match.
+ARG PG_CARDANO_URL=
+ARG PG_CARDANO_SHA256_X86_64=3004290596c777cdadbc6f4f8566b0ff7ea42bbe6278487b7f3707c1e2384c34
+ARG PG_CARDANO_SHA256_AARCH64=e97bd71e3e65c9dfd31d6161bfe9e0d7d7ff53a02fbebf7b26a2e66b8ba89237
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl jq \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) arch=x86_64; sha="${PG_CARDANO_SHA256_X86_64}" ;; \
+      arm64) arch=aarch64; sha="${PG_CARDANO_SHA256_AARCH64}" ;; \
+      *) echo "pg_cardano has no build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    url="${PG_CARDANO_URL:-https://share.koios.rest/api/public/dl/xFdZDfM4/bin/pg_cardano_linux_${arch}_v${PG_CARDANO_VERSION}.tar.gz}"; \
+    curl -fsSL -o /tmp/pg_cardano.tar.gz "$url"; \
+    echo "${sha}  /tmp/pg_cardano.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/pg_cardano.tar.gz -C /tmp; \
+    pgmajor="$(pg_config --version | sed -E 's/^PostgreSQL ([0-9]+).*/\1/')"; \
+    test -d "/tmp/pg_cardano/bin/pg${pgmajor}"; \
+    cp /tmp/pg_cardano/migrations/*.control /tmp/pg_cardano/migrations/*.sql "$(pg_config --sharedir)/extension/"; \
+    cp "/tmp/pg_cardano/bin/pg${pgmajor}/"* "$(pg_config --pkglibdir)/"; \
+    rm -rf /tmp/pg_cardano /tmp/pg_cardano.tar.gz

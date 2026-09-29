@@ -1,5 +1,14 @@
 # Changelog
 
+## Version 0.4.0
+
+### Added
+- `cardano devnet up --docker --koios` (or `ADAUP_DEVNET_KOIOS=1`) also serves the devnet through the Koios REST API at `http://127.0.0.1:8053/api/v1`: the gRest SQL (Koios v1.4.2, bundled) in the db-sync database, PostgREST, a cache-update loop and an nginx proxy. The first run builds a Postgres image with Koios's `pg_cardano` extension. See `docs/devnet-docker.md`.
+- `ADAUP_DEVNET_KOIOS_PORT`, `_KOIOS_POSTGRES_BASE`, `_KOIOS_POSTGRES_IMAGE` (use your own Postgres with pg_cardano, skipping the build), `_PG_CARDANO_URL` (download mirror), `_POSTGREST_IMAGE` and `_KOIOS_PROXY_IMAGE` settings; a `koios` entry in `devnet.json`.
+
+### Changed
+- **Breaking:** db-sync on the docker devnet now runs with `tx_out.use_address_table: true` and `tx_cbor: enable`, the settings Koios's SQL expects. The database schema differs from 0.3.0: addresses are in the `address` table (`tx_out.address_id`), and `tx_out.address` no longer exists. `tx_out.stake_address_id` is unchanged. To read an address, join `address` on `tx_out.address_id`.
+
 ## Version 0.3.0
 
 ### Added

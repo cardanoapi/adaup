@@ -1,0 +1,44 @@
+CREATE OR REPLACE FUNCTION grest.pool_stake_snapshot(_pool_bech32 text)
+RETURNS TABLE (
+  snapshot text,
+  epoch_no bigint,
+  nonce text,
+  pool_stake text,
+  active_stake text
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  _epoch_no bigint;
+  _mark     bigint;
+  _set      bigint;
+  _go       bigint;
+BEGIN
+  SELECT MAX(epoch_param.epoch_no) INTO _epoch_no FROM public.epoch_param;
+  _mark := (_epoch_no+1);
+  _set  := (_epoch_no);
+  _go   := (_epoch_no-1);
+
+  RETURN QUERY
+  SELECT
+    CASE
+      WHEN (easc.epoch_no = _mark) THEN 'Mark'
+      WHEN (easc.epoch_no = _set)  THEN 'Set'
+      ELSE 'Go'
+    END AS snapshot,
+    easc.epoch_no,
+    eic.p_nonce,
+    pstat.stake::text,
+    easc.amount::text
+  FROM
+    grest.epoch_active_stake_cache AS easc
+    INNER JOIN pool_stat AS pstat on (easc.epoch_no - 1) = pstat.epoch_no
+    LEFT JOIN grest.epoch_info_cache AS eic ON eic.epoch_no = easc.epoch_no
+  WHERE pstat.pool_hash_id = (SELECT id FROM pool_hash AS ph WHERE ph.hash_raw = cardano.bech32_decode_data(_pool_bech32))
+    AND easc.epoch_no BETWEEN _go AND _mark
+  ORDER BY
+    easc.epoch_no;
+END;
+$$;
+
+COMMENT ON FUNCTION grest.pool_stake_snapshot IS 'Returns Mark, Set and Go stake snapshots for the selected pool, useful for leaderlog calculation'; -- noqa: LT01

@@ -32,6 +32,12 @@ NODE_IMAGE = "ghcr.io/intersectmbo/cardano-node:11.0.1"
 KUBER_IMAGE = "ghcr.io/dquadrant/kuber:1009cf9eefa47a3fccafad75c7aa404088f8e8ac"
 DBSYNC_IMAGE = "ghcr.io/intersectmbo/cardano-db-sync:13.7.2.1"
 POSTGRES_IMAGE = "postgres:17-alpine"
+# The Koios profile needs Postgres with the pg_cardano extension. Koios ships it
+# for Postgres 17 on glibc only, so the image it builds starts from Debian.
+KOIOS_POSTGRES_BASE = "postgres:17-bookworm"
+# PostgREST version pinned by Koios's setup-grest.sh for gRest 1.4.2.
+POSTGREST_IMAGE = "postgrest/postgrest:v14.10"
+KOIOS_PROXY_IMAGE = "nginx:1.27-alpine"
 
 # CLI flag name -> (env var, type, default). A default of None is derived later.
 SETTINGS_SPEC = {
@@ -57,10 +63,12 @@ SETTINGS_SPEC = {
     "pool_stake_ada": ("ADAUP_DEVNET_POOL_STAKE_ADA", int, 50_000_000),
     "kuber": ("ADAUP_DEVNET_KUBER", bool, True),
     "dbsync": ("ADAUP_DEVNET_DBSYNC", bool, True),
+    "koios": ("ADAUP_DEVNET_KOIOS", bool, False),
     "bind": ("ADAUP_DEVNET_BIND", str, "127.0.0.1"),
     "kuber_port": ("ADAUP_DEVNET_KUBER_PORT", int, 8081),
     "postgres_port": ("ADAUP_DEVNET_POSTGRES_PORT", int, 5433),
     "anchor_port": ("ADAUP_DEVNET_ANCHOR_PORT", int, 8090),
+    "koios_port": ("ADAUP_DEVNET_KOIOS_PORT", int, 8053),
     "postgres_user": ("ADAUP_DEVNET_POSTGRES_USER", str, "postgres"),
     "postgres_password": ("ADAUP_DEVNET_POSTGRES_PASSWORD", str, "postgres"),
     "postgres_db": ("ADAUP_DEVNET_POSTGRES_DB", str, "cexplorer"),
@@ -68,6 +76,11 @@ SETTINGS_SPEC = {
     "kuber_image": ("ADAUP_DEVNET_KUBER_IMAGE", str, KUBER_IMAGE),
     "dbsync_image": ("ADAUP_DEVNET_DBSYNC_IMAGE", str, DBSYNC_IMAGE),
     "postgres_image": ("ADAUP_DEVNET_POSTGRES_IMAGE", str, POSTGRES_IMAGE),
+    "koios_postgres_base": ("ADAUP_DEVNET_KOIOS_POSTGRES_BASE", str, KOIOS_POSTGRES_BASE),
+    "koios_postgres_image": ("ADAUP_DEVNET_KOIOS_POSTGRES_IMAGE", str, ""),
+    "pg_cardano_url": ("ADAUP_DEVNET_PG_CARDANO_URL", str, ""),
+    "postgrest_image": ("ADAUP_DEVNET_POSTGREST_IMAGE", str, POSTGREST_IMAGE),
+    "koios_proxy_image": ("ADAUP_DEVNET_KOIOS_PROXY_IMAGE", str, KOIOS_PROXY_IMAGE),
     "timeout": ("ADAUP_DEVNET_TIMEOUT", int, 600),
     # Comma-separated IPFS gateways db-sync resolves ipfs:// anchors through
     # (its `ipfs_gateway` setting). Empty keeps db-sync's default.
@@ -99,10 +112,12 @@ class DockerDevnetSettings:
     pool_stake_ada: int
     kuber: bool
     dbsync: bool
+    koios: bool
     bind: str
     kuber_port: int
     postgres_port: int
     anchor_port: int
+    koios_port: int
     postgres_user: str
     postgres_password: str
     postgres_db: str
@@ -110,6 +125,11 @@ class DockerDevnetSettings:
     kuber_image: str
     dbsync_image: str
     postgres_image: str
+    koios_postgres_base: str
+    koios_postgres_image: str
+    pg_cardano_url: str
+    postgrest_image: str
+    koios_proxy_image: str
     timeout: int
     ipfs_gateways: str = ""
 
@@ -127,7 +147,26 @@ class DockerDevnetSettings:
 
     @property
     def profiles(self):
-        return [name for name, enabled in (("kuber", self.kuber), ("dbsync", self.dbsync)) if enabled]
+        return [
+            name for name, enabled in (("kuber", self.kuber), ("dbsync", self.dbsync), ("koios", self.koios))
+            if enabled
+        ]
+
+    @property
+    def koios_postgres_tag(self):
+        """Tag of the Postgres image built for the Koios profile."""
+        return f"{self.project}-postgres-koios:pg17"
+
+    @property
+    def builds_koios_postgres(self):
+        """False when the user supplies a ready image (one with pg_cardano installed)."""
+        return self.koios and not self.koios_postgres_image
+
+    @property
+    def postgres_image_in_use(self):
+        if not self.koios:
+            return self.postgres_image
+        return self.koios_postgres_image or self.koios_postgres_tag
 
 
 def log(message=""):
@@ -202,6 +241,8 @@ def validate_settings(settings):
         raise ValueError("committee threshold must be between 0 and 1")
     if settings.committee_size < 1:
         raise ValueError("committee size must be at least 1")
+    if settings.koios and not settings.dbsync:
+        raise ValueError("Koios reads the db-sync database, so it cannot run with --no-dbsync")
 
 
 def _package_devnet_root():
@@ -261,7 +302,7 @@ def compose(settings, *args, check=True, capture=False, all_profiles=False):
     ]
     env = compose_env(settings)
     if all_profiles:
-        env["COMPOSE_PROFILES"] = "kuber,dbsync"
+        env["COMPOSE_PROFILES"] = "kuber,dbsync,koios"
     result = subprocess.run(
         cmd,
         env=env,
@@ -579,6 +620,11 @@ def generate_devnet(settings):
     _write_json(os.path.join(config_dir, "db-sync-config.json"), dbsync_config)
     shutil.copy2(_asset("docker", "anchor-server.sh"), os.path.join(config_dir, "anchor-server.sh"))
     shutil.copy2(_asset("docker", "docker-compose.yml"), settings.compose_file)
+    koios_dir = os.path.join(settings.dir, "koios")
+    if os.path.isdir(koios_dir):
+        shutil.rmtree(koios_dir)
+    if settings.koios:
+        shutil.copytree(_asset("docker", "koios"), koios_dir)
     _write_env_file(settings)
     shutil.rmtree(tmp)
 
@@ -607,6 +653,8 @@ def generate_devnet(settings):
             "postgres": {"enabled": settings.dbsync, "host": "postgres", "port": 5432,
                          "hostPort": settings.postgres_port, "user": settings.postgres_user,
                          "password": settings.postgres_password, "database": settings.postgres_db},
+            "koios": {"enabled": settings.koios, "url": "http://koios/api/v1",
+                      "hostUrl": f"http://{settings.bind}:{settings.koios_port}/api/v1"},
             "anchors": {"url": "http://anchors:8080", "hostUrl": f"http://{settings.bind}:{settings.anchor_port}"},
         },
         "faucet": {"address": faucet_addr, "skey": "keys/faucet/payment.skey", "vkey": "keys/faucet/payment.vkey"},
@@ -643,13 +691,16 @@ def _write_env_file(settings):
         "ADAUP_DEVNET_KUBER_PORT": settings.kuber_port,
         "ADAUP_DEVNET_POSTGRES_PORT": settings.postgres_port,
         "ADAUP_DEVNET_ANCHOR_PORT": settings.anchor_port,
+        "ADAUP_DEVNET_KOIOS_PORT": settings.koios_port,
         "ADAUP_DEVNET_POSTGRES_USER": settings.postgres_user,
         "ADAUP_DEVNET_POSTGRES_PASSWORD": settings.postgres_password,
         "ADAUP_DEVNET_POSTGRES_DB": settings.postgres_db,
         "ADAUP_DEVNET_NODE_IMAGE": settings.node_image,
         "ADAUP_DEVNET_KUBER_IMAGE": settings.kuber_image,
         "ADAUP_DEVNET_DBSYNC_IMAGE": settings.dbsync_image,
-        "ADAUP_DEVNET_POSTGRES_IMAGE": settings.postgres_image,
+        "ADAUP_DEVNET_POSTGRES_IMAGE": settings.postgres_image_in_use,
+        "ADAUP_DEVNET_POSTGREST_IMAGE": settings.postgrest_image,
+        "ADAUP_DEVNET_KOIOS_PROXY_IMAGE": settings.koios_proxy_image,
         "COMPOSE_PROFILES": ",".join(settings.profiles),
     }
     path = os.path.join(settings.dir, ".env")
@@ -687,6 +738,28 @@ def wait_for_blocks(settings, min_block=2):
         return tip if tip and tip.get("block", 0) >= min_block else None
 
     return _wait_for("the node to produce blocks", producing, settings.timeout)
+
+
+def build_koios_postgres_image(settings):
+    """
+    Build the Postgres image that carries pg_cardano (koios/Dockerfile.postgres).
+    Docker's layer cache makes every run after the first instant.
+    """
+    log(f"Building {settings.koios_postgres_tag} (Postgres with the pg_cardano extension)...")
+    context = _asset("docker", "koios")
+    result = subprocess.run(
+        [
+            "docker", "build",
+            "--file", os.path.join(context, "Dockerfile.postgres"),
+            "--build-arg", f"POSTGRES_BASE={settings.koios_postgres_base}",
+            *(["--build-arg", f"PG_CARDANO_URL={settings.pg_cardano_url}"] if settings.pg_cardano_url else []),
+            "--tag", settings.koios_postgres_tag,
+            context,
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("building the Koios Postgres image failed (see the docker output above)")
 
 
 def _container_health(settings, service):
@@ -742,6 +815,8 @@ def print_summary(settings, info, tip=None):
             f"  postgres:      postgresql://{settings.postgres_user}:{settings.postgres_password}"
             f"@{settings.bind}:{settings.postgres_port}/{settings.postgres_db}  (postgres:5432 in network)"
         )
+    if settings.koios:
+        log(f"  koios:         http://{settings.bind}:{settings.koios_port}/api/v1  (http://koios/api/v1 in network)")
     log(f"  anchors:       http://{settings.bind}:{settings.anchor_port}  (http://anchors:8080 in network)")
     log(f"  epoch:         {settings.epoch_seconds:g}s, gov action lifetime {settings.gov_action_lifetime} epochs")
     log(f"  stop:          cardano devnet down --docker --dir {settings.dir}")
@@ -751,6 +826,13 @@ def devnet_up(settings, detach=True, wait=False):
     require_docker()
     log(f"Preparing docker devnet in {settings.dir}")
     _remove_stack(settings)
+    # Before the genesis is generated: it fixes systemStart to now, and a first
+    # image build can take minutes, which would leave the node starting behind.
+    if settings.koios and settings.postgres_image != POSTGRES_IMAGE:
+        log("Note: ADAUP_DEVNET_POSTGRES_IMAGE is ignored with --koios; "
+            "set ADAUP_DEVNET_KOIOS_POSTGRES_IMAGE to use your own Postgres image with pg_cardano.")
+    if settings.builds_koios_postgres:
+        build_koios_postgres_image(settings)
     info = generate_devnet(settings)
     started = time.time()
     compose(settings, "up", "--detach", "--remove-orphans")
@@ -758,7 +840,10 @@ def devnet_up(settings, detach=True, wait=False):
     tip = wait_for_blocks(settings)
     log(f"Node is producing blocks ({time.time() - started:.1f}s after start).")
     if wait:
-        wait_for_healthy(settings, [s for s, on in (("kuber", settings.kuber), ("db-sync", settings.dbsync)) if on])
+        wait_for_healthy(
+            settings,
+            [s for s, on in (("kuber", settings.kuber), ("db-sync", settings.dbsync), ("koios", settings.koios)) if on],
+        )
     print_summary(settings, info, tip)
     if detach:
         return info
