@@ -1,5 +1,15 @@
 # Changelog
 
+## Version 0.5.0
+
+### Added
+- `cardano devnet up --docker --blockfrost` (or `ADAUP_DEVNET_BLOCKFROST=1`) also serves the devnet through the Blockfrost API at `http://127.0.0.1:8054`: blockfrost-ryo 6.8.0, built from its release commit for the host's architecture, over a db-sync of its own (`db-sync-blockfrost`, Postgres with pg_cardano at `127.0.0.1:5434`). It runs alongside db-sync and Koios on the same chain. See `docs/devnet-docker.md`.
+- `ADAUP_DEVNET_BLOCKFROST_PORT`, `_BLOCKFROST_POSTGRES_PORT` and `_BLOCKFROST_IMAGE` (use your own ryo image, skipping the build); a `blockfrost` entry in `devnet.json`.
+
+### Notes
+- `--blockfrost` needs a whole-second `--slot-length`: Blockfrost types `slot_length` in `/genesis` and `/network/eras` as an integer, so 0.2 s slots would be served as `0`. `--slot-length 1 --active-slots-coeff 1 --epoch-length 60` keeps 60 s epochs with a block every second.
+- The shared db-sync database is unchanged; ryo's `tx_out` layout (`consumed`, `force_tx_in`, no address table) lives only in the second one.
+
 ## Version 0.4.0
 
 ### Added

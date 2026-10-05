@@ -59,6 +59,78 @@ class DockerDevnetSettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.load(overrides={"koios": True, "dbsync": False})
 
+    def whole_second_slots(self, **overrides):
+        return {"slot_length": 1.0, "active_slots_coeff": 1.0, "epoch_length": 60, **overrides}
+
+    def test_blockfrost_is_opt_in(self):
+        self.assertNotIn("blockfrost", self.load().profiles)
+        settings = self.load(overrides=self.whole_second_slots(blockfrost=True))
+        self.assertEqual(settings.profiles, ["kuber", "dbsync", "blockfrost"])
+        self.assertEqual((settings.blockfrost_port, settings.blockfrost_postgres_port), (8054, 5434))
+        self.assertEqual(settings.blockfrost_image_in_use,
+                         f"adaup-devnet-blockfrost-ryo:{devnet_docker.BLOCKFROST_RYO_VERSION}")
+        self.assertTrue(settings.builds_blockfrost_image)
+        # ryo's own Postgres needs pg_cardano; db-sync's keeps the stock image without --koios.
+        self.assertTrue(settings.builds_koios_postgres)
+        self.assertEqual(settings.pg_cardano_image, "adaup-devnet-postgres-koios:pg17")
+        self.assertEqual(settings.postgres_image_in_use, devnet_docker.POSTGRES_IMAGE)
+        # Each keeps its own db-sync, so Koios and Blockfrost can run on one chain.
+        both = self.load(overrides=self.whole_second_slots(blockfrost=True, koios=True))
+        self.assertEqual(both.profiles, ["kuber", "dbsync", "koios", "blockfrost"])
+        self.assertEqual(both.postgres_image_in_use, both.pg_cardano_image)
+
+    def test_blockfrost_from_env_with_own_image(self):
+        settings = self.load(env={
+            "ADAUP_DEVNET_BLOCKFROST": "1", "ADAUP_DEVNET_SLOT_LENGTH": "1",
+            "ADAUP_DEVNET_BLOCKFROST_IMAGE": "mine/ryo:6", "ADAUP_DEVNET_BLOCKFROST_PORT": "3000",
+        })
+        self.assertTrue(settings.blockfrost)
+        self.assertEqual(settings.blockfrost_port, 3000)
+        self.assertFalse(settings.builds_blockfrost_image)
+        self.assertEqual(settings.blockfrost_image_in_use, "mine/ryo:6")
+
+    def test_blockfrost_runs_without_the_shared_dbsync(self):
+        settings = self.load(overrides=self.whole_second_slots(blockfrost=True, dbsync=False))
+        self.assertEqual(settings.profiles, ["kuber", "blockfrost"])
+
+    def test_blockfrost_needs_whole_second_slots(self):
+        # ryo serves /genesis slot_length as an integer: 0.2 would read as 0.
+        with self.assertRaises(ValueError):
+            self.load(overrides={"blockfrost": True})
+
+    def test_blockfrost_dbsync_config_is_what_ryo_reads(self):
+        shared = devnet_docker._read_json(devnet_docker._asset("docker", "db-sync-config.json"))
+        config = devnet_docker.blockfrost_dbsync_config(shared)
+        # ryo selects tx_out.address, joins tx_in and reads consumed_by_tx_id.
+        self.assertEqual(config["insert_options"]["tx_out"],
+                         {"value": "consumed", "force_tx_in": True, "use_address_table": False})
+        self.assertEqual(config["insert_options"]["tx_cbor"], "enable")
+        # The shared config is left as Koios needs it.
+        self.assertTrue(shared["insert_options"]["tx_out"]["use_address_table"])
+        self.assertEqual({k: v for k, v in config.items() if k != "insert_options"},
+                         {k: v for k, v in shared.items() if k != "insert_options"})
+
+    def test_blockfrost_genesis(self):
+        shelley = {
+            "activeSlotsCoeff": 1.0, "updateQuorum": 1, "maxLovelaceSupply": 45_000_000_000_000_000,
+            "networkMagic": 42, "epochLength": 60, "slotsPerKESPeriod": 129600, "slotLength": 1.0,
+            "maxKESEvolutions": 60, "securityParam": 10,
+        }
+        genesis = devnet_docker.blockfrost_genesis(shelley, 1_700_000_000)
+        self.assertEqual(genesis["system_start"], 1_700_000_000)
+        self.assertEqual(genesis["max_lovelace_supply"], "45000000000000000")
+        self.assertEqual((genesis["network_magic"], genesis["epoch_length"], genesis["slot_length"]), (42, 60, 1.0))
+        settings = self.load(overrides=self.whole_second_slots(blockfrost=True))
+        self.assertEqual(devnet_docker.blockfrost_byron_genesis(settings)["end_epoch"], 0)
+        config = devnet_docker.blockfrost_config(settings)
+        self.assertEqual(config["network"], "custom")
+        self.assertEqual(config["dbSync"]["host"], "postgres-blockfrost")
+        self.assertNotIn("password", config["dbSync"])
+
+    def test_packaged_blockfrost_assets_exist(self):
+        for name in ("Dockerfile", "initdb.sql"):
+            self.assertTrue(os.path.isfile(devnet_docker._asset("docker", "blockfrost", name)), name)
+
     def test_explicit_lifetime(self):
         settings = self.load(env={"ADAUP_DEVNET_GOV_ACTION_LIFETIME": "7"})
         self.assertEqual(settings.gov_action_lifetime, 7)

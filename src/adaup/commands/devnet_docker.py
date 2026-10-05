@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """
 Docker devnet: a single block-producing Conway node with on-chain governance,
-plus optional kuber, cardano-db-sync + postgres, and an anchor file server,
-all in docker. Only docker is needed on the host; cardano-cli runs inside the
-node image.
+plus optional kuber, cardano-db-sync + postgres, Koios, blockfrost-ryo and an
+anchor file server, all in docker. Only docker is needed on the host;
+cardano-cli runs inside the node image.
 
 Genesis is regenerated on every `up` (systemStart = now), so the postgres and
 node volumes are always recreated as well.
@@ -38,6 +38,8 @@ KOIOS_POSTGRES_BASE = "postgres:17-bookworm"
 # PostgREST version pinned by Koios's setup-grest.sh for gRest 1.4.2.
 POSTGREST_IMAGE = "postgrest/postgrest:v14.10"
 KOIOS_PROXY_IMAGE = "nginx:1.27-alpine"
+# blockfrost-ryo release built by blockfrost/Dockerfile (which pins its commit).
+BLOCKFROST_RYO_VERSION = "6.8.0"
 
 # CLI flag name -> (env var, type, default). A default of None is derived later.
 SETTINGS_SPEC = {
@@ -64,11 +66,14 @@ SETTINGS_SPEC = {
     "kuber": ("ADAUP_DEVNET_KUBER", bool, True),
     "dbsync": ("ADAUP_DEVNET_DBSYNC", bool, True),
     "koios": ("ADAUP_DEVNET_KOIOS", bool, False),
+    "blockfrost": ("ADAUP_DEVNET_BLOCKFROST", bool, False),
     "bind": ("ADAUP_DEVNET_BIND", str, "127.0.0.1"),
     "kuber_port": ("ADAUP_DEVNET_KUBER_PORT", int, 8081),
     "postgres_port": ("ADAUP_DEVNET_POSTGRES_PORT", int, 5433),
     "anchor_port": ("ADAUP_DEVNET_ANCHOR_PORT", int, 8090),
     "koios_port": ("ADAUP_DEVNET_KOIOS_PORT", int, 8053),
+    "blockfrost_port": ("ADAUP_DEVNET_BLOCKFROST_PORT", int, 8054),
+    "blockfrost_postgres_port": ("ADAUP_DEVNET_BLOCKFROST_POSTGRES_PORT", int, 5434),
     "postgres_user": ("ADAUP_DEVNET_POSTGRES_USER", str, "postgres"),
     "postgres_password": ("ADAUP_DEVNET_POSTGRES_PASSWORD", str, "postgres"),
     "postgres_db": ("ADAUP_DEVNET_POSTGRES_DB", str, "cexplorer"),
@@ -81,6 +86,8 @@ SETTINGS_SPEC = {
     "pg_cardano_url": ("ADAUP_DEVNET_PG_CARDANO_URL", str, ""),
     "postgrest_image": ("ADAUP_DEVNET_POSTGREST_IMAGE", str, POSTGREST_IMAGE),
     "koios_proxy_image": ("ADAUP_DEVNET_KOIOS_PROXY_IMAGE", str, KOIOS_PROXY_IMAGE),
+    # A ready blockfrost-ryo image skips the build.
+    "blockfrost_image": ("ADAUP_DEVNET_BLOCKFROST_IMAGE", str, ""),
     "timeout": ("ADAUP_DEVNET_TIMEOUT", int, 600),
     # Comma-separated IPFS gateways db-sync resolves ipfs:// anchors through
     # (its `ipfs_gateway` setting). Empty keeps db-sync's default.
@@ -132,6 +139,10 @@ class DockerDevnetSettings:
     koios_proxy_image: str
     timeout: int
     ipfs_gateways: str = ""
+    blockfrost: bool = False
+    blockfrost_port: int = 8054
+    blockfrost_postgres_port: int = 5434
+    blockfrost_image: str = ""
 
     @property
     def epoch_seconds(self):
@@ -148,25 +159,46 @@ class DockerDevnetSettings:
     @property
     def profiles(self):
         return [
-            name for name, enabled in (("kuber", self.kuber), ("dbsync", self.dbsync), ("koios", self.koios))
+            name for name, enabled in (
+                ("kuber", self.kuber), ("dbsync", self.dbsync), ("koios", self.koios),
+                ("blockfrost", self.blockfrost),
+            )
             if enabled
         ]
 
     @property
     def koios_postgres_tag(self):
-        """Tag of the Postgres image built for the Koios profile."""
+        """Tag of the Postgres image built for the Koios and Blockfrost profiles."""
         return f"{self.project}-postgres-koios:pg17"
 
     @property
     def builds_koios_postgres(self):
         """False when the user supplies a ready image (one with pg_cardano installed)."""
-        return self.koios and not self.koios_postgres_image
+        return (self.koios or self.blockfrost) and not self.koios_postgres_image
+
+    @property
+    def pg_cardano_image(self):
+        """Postgres with pg_cardano: db-sync's with --koios, always Blockfrost's."""
+        return self.koios_postgres_image or self.koios_postgres_tag
 
     @property
     def postgres_image_in_use(self):
         if not self.koios:
             return self.postgres_image
-        return self.koios_postgres_image or self.koios_postgres_tag
+        return self.pg_cardano_image
+
+    @property
+    def blockfrost_tag(self):
+        """Tag of the blockfrost-ryo image built from blockfrost/Dockerfile."""
+        return f"{self.project}-blockfrost-ryo:{BLOCKFROST_RYO_VERSION}"
+
+    @property
+    def builds_blockfrost_image(self):
+        return self.blockfrost and not self.blockfrost_image
+
+    @property
+    def blockfrost_image_in_use(self):
+        return self.blockfrost_image or self.blockfrost_tag
 
 
 def log(message=""):
@@ -243,6 +275,14 @@ def validate_settings(settings):
         raise ValueError("committee size must be at least 1")
     if settings.koios and not settings.dbsync:
         raise ValueError("Koios reads the db-sync database, so it cannot run with --no-dbsync")
+    # Blockfrost's schema types /genesis and /network/eras slot_length as an
+    # integer, and ryo serialises through it: 0.2 s slots are served as 0.
+    if settings.blockfrost and not float(settings.slot_length).is_integer():
+        raise ValueError(
+            f"blockfrost-ryo serves the slot length in whole seconds, so --blockfrost needs an integer "
+            f"--slot-length (not {settings.slot_length:g}); for 60 s epochs with a block every second use "
+            f"--slot-length 1 --active-slots-coeff 1 --epoch-length 60"
+        )
 
 
 def _package_devnet_root():
@@ -302,7 +342,7 @@ def compose(settings, *args, check=True, capture=False, all_profiles=False):
     ]
     env = compose_env(settings)
     if all_profiles:
-        env["COMPOSE_PROFILES"] = "kuber,dbsync,koios"
+        env["COMPOSE_PROFILES"] = "kuber,dbsync,koios,blockfrost"
     result = subprocess.run(
         cmd,
         env=env,
@@ -625,6 +665,12 @@ def generate_devnet(settings):
         shutil.rmtree(koios_dir)
     if settings.koios:
         shutil.copytree(_asset("docker", "koios"), koios_dir)
+    blockfrost_dir = os.path.join(settings.dir, "blockfrost")
+    if os.path.isdir(blockfrost_dir):
+        shutil.rmtree(blockfrost_dir)
+    if settings.blockfrost:
+        _write_json(os.path.join(config_dir, "db-sync-blockfrost-config.json"), blockfrost_dbsync_config(dbsync_config))
+        _write_blockfrost_dir(settings, blockfrost_dir, shelley, start)
     _write_env_file(settings)
     shutil.rmtree(tmp)
 
@@ -655,6 +701,13 @@ def generate_devnet(settings):
                          "password": settings.postgres_password, "database": settings.postgres_db},
             "koios": {"enabled": settings.koios, "url": "http://koios/api/v1",
                       "hostUrl": f"http://{settings.bind}:{settings.koios_port}/api/v1"},
+            "blockfrost": {"enabled": settings.blockfrost, "url": "http://blockfrost:3000",
+                           "hostUrl": f"http://{settings.bind}:{settings.blockfrost_port}",
+                           "version": BLOCKFROST_RYO_VERSION,
+                           "postgres": {"host": "postgres-blockfrost", "port": 5432,
+                                        "hostPort": settings.blockfrost_postgres_port,
+                                        "user": settings.postgres_user, "password": settings.postgres_password,
+                                        "database": settings.postgres_db}},
             "anchors": {"url": "http://anchors:8080", "hostUrl": f"http://{settings.bind}:{settings.anchor_port}"},
         },
         "faucet": {"address": faucet_addr, "skey": "keys/faucet/payment.skey", "vkey": "keys/faucet/payment.vkey"},
@@ -670,6 +723,73 @@ def generate_devnet(settings):
     }
     _write_json(os.path.join(base, "devnet.json"), info)
     return info
+
+
+def blockfrost_dbsync_config(dbsync_config):
+    """
+    db-sync's configuration for blockfrost-ryo's database: the shared one with
+    the tx_out layout ryo's SQL reads. ryo selects tx_out.address,
+    address_has_script and payment_cred (gone with the address table), joins
+    tx_in for spent outputs (empty in "consumed" mode unless forced) and reads
+    tx_out.consumed_by_tx_id (set only in "consumed" mode).
+    """
+    config = json.loads(json.dumps(dbsync_config))
+    config["insert_options"]["tx_out"] = {"value": "consumed", "force_tx_in": True, "use_address_table": False}
+    return config
+
+
+def blockfrost_genesis(shelley, start):
+    """
+    The genesis summary blockfrost-ryo serves at /genesis and dates slots with
+    (its genesis.json), from this devnet's Shelley genesis.
+    """
+    return {
+        "active_slots_coefficient": shelley["activeSlotsCoeff"],
+        "update_quorum": shelley["updateQuorum"],
+        "max_lovelace_supply": str(shelley["maxLovelaceSupply"]),
+        "network_magic": shelley["networkMagic"],
+        "epoch_length": shelley["epochLength"],
+        "system_start": start,
+        "slots_per_kes_period": shelley["slotsPerKESPeriod"],
+        "slot_length": shelley["slotLength"],
+        "max_kes_evolutions": shelley["maxKESEvolutions"],
+        "security_param": shelley["securityParam"],
+    }
+
+
+def blockfrost_byron_genesis(settings):
+    """ryo's byron_genesis.json. Every era starts at epoch 0, so Byron has none."""
+    k = settings.security_param
+    return {"epoch_length": 10 * k, "slot_length": settings.slot_length, "safe_zone": 2 * k, "end_epoch": 0}
+
+
+def blockfrost_config(settings):
+    """ryo's configuration (production.json, read with NODE_ENV=production). The password is in the env."""
+    return {
+        # debug logs every request, which is what a devnet is for.
+        "server": {"listenAddress": "0.0.0.0", "port": 3000, "debug": True},
+        "dbSync": {
+            "host": "postgres-blockfrost",
+            "port": 5432,
+            "user": settings.postgres_user,
+            "database": settings.postgres_db,
+            "maxConnections": 20,
+        },
+        "network": "custom",
+        "genesisDataFolder": "/blockfrost/genesis",
+        # No registry knows devnet assets, and nothing here may reach the internet.
+        "tokenRegistryEnabled": False,
+        "tokenRegistryUrl": "",
+        "mithril": {"enabled": False},
+    }
+
+
+def _write_blockfrost_dir(settings, blockfrost_dir, shelley, start):
+    genesis_dir = ensure_dir(os.path.join(blockfrost_dir, "genesis"))
+    _write_json(os.path.join(blockfrost_dir, "production.json"), blockfrost_config(settings))
+    _write_json(os.path.join(genesis_dir, "genesis.json"), blockfrost_genesis(shelley, start))
+    _write_json(os.path.join(genesis_dir, "byron_genesis.json"), blockfrost_byron_genesis(settings))
+    shutil.copy2(_asset("docker", "blockfrost", "initdb.sql"), os.path.join(blockfrost_dir, "initdb.sql"))
 
 
 def _walk_files(root):
@@ -692,6 +812,8 @@ def _write_env_file(settings):
         "ADAUP_DEVNET_POSTGRES_PORT": settings.postgres_port,
         "ADAUP_DEVNET_ANCHOR_PORT": settings.anchor_port,
         "ADAUP_DEVNET_KOIOS_PORT": settings.koios_port,
+        "ADAUP_DEVNET_BLOCKFROST_PORT": settings.blockfrost_port,
+        "ADAUP_DEVNET_BLOCKFROST_POSTGRES_PORT": settings.blockfrost_postgres_port,
         "ADAUP_DEVNET_POSTGRES_USER": settings.postgres_user,
         "ADAUP_DEVNET_POSTGRES_PASSWORD": settings.postgres_password,
         "ADAUP_DEVNET_POSTGRES_DB": settings.postgres_db,
@@ -701,6 +823,9 @@ def _write_env_file(settings):
         "ADAUP_DEVNET_POSTGRES_IMAGE": settings.postgres_image_in_use,
         "ADAUP_DEVNET_POSTGREST_IMAGE": settings.postgrest_image,
         "ADAUP_DEVNET_KOIOS_PROXY_IMAGE": settings.koios_proxy_image,
+        # Always set, so compose can read the file with every profile.
+        "ADAUP_DEVNET_PG_CARDANO_IMAGE": settings.pg_cardano_image,
+        "ADAUP_DEVNET_BLOCKFROST_IMAGE": settings.blockfrost_image_in_use,
         "COMPOSE_PROFILES": ",".join(settings.profiles),
     }
     path = os.path.join(settings.dir, ".env")
@@ -762,6 +887,18 @@ def build_koios_postgres_image(settings):
         raise RuntimeError("building the Koios Postgres image failed (see the docker output above)")
 
 
+def build_blockfrost_image(settings):
+    """Build blockfrost-ryo (blockfrost/Dockerfile). The first build takes a few minutes."""
+    log(f"Building {settings.blockfrost_tag} (blockfrost-ryo {BLOCKFROST_RYO_VERSION} from source)...")
+    context = _asset("docker", "blockfrost")
+    result = subprocess.run(
+        ["docker", "build", "--file", os.path.join(context, "Dockerfile"), "--tag", settings.blockfrost_tag, context],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("building the blockfrost-ryo image failed (see the docker output above)")
+
+
 def _container_health(settings, service):
     result = compose(settings, "ps", "--format", "json", service, check=False, capture=True)
     for line in result.stdout.splitlines():
@@ -789,7 +926,7 @@ def _remove_stack(settings):
     if os.path.isfile(settings.compose_file) and os.path.isfile(os.path.join(settings.dir, ".env")):
         compose(settings, "down", "--volumes", "--remove-orphans", check=False, all_profiles=True)
     # Also catch volumes left behind by a stack started from another directory.
-    for suffix in ("config", "ipc", "node-db", "pgdata", "dbsync-state"):
+    for suffix in ("config", "ipc", "node-db", "pgdata", "dbsync-state", "blockfrost-pgdata", "blockfrost-dbsync-state"):
         subprocess.run(
             ["docker", "volume", "rm", "-f", f"{settings.network}-{suffix}"],
             capture_output=True,
@@ -817,6 +954,12 @@ def print_summary(settings, info, tip=None):
         )
     if settings.koios:
         log(f"  koios:         http://{settings.bind}:{settings.koios_port}/api/v1  (http://koios/api/v1 in network)")
+    if settings.blockfrost:
+        log(f"  blockfrost:    http://{settings.bind}:{settings.blockfrost_port}  (http://blockfrost:3000 in network)")
+        log(
+            f"                 its db-sync: postgresql://{settings.postgres_user}:{settings.postgres_password}"
+            f"@{settings.bind}:{settings.blockfrost_postgres_port}/{settings.postgres_db}"
+        )
     log(f"  anchors:       http://{settings.bind}:{settings.anchor_port}  (http://anchors:8080 in network)")
     log(f"  epoch:         {settings.epoch_seconds:g}s, gov action lifetime {settings.gov_action_lifetime} epochs")
     log(f"  stop:          cardano devnet down --docker --dir {settings.dir}")
@@ -833,6 +976,8 @@ def devnet_up(settings, detach=True, wait=False):
             "set ADAUP_DEVNET_KOIOS_POSTGRES_IMAGE to use your own Postgres image with pg_cardano.")
     if settings.builds_koios_postgres:
         build_koios_postgres_image(settings)
+    if settings.builds_blockfrost_image:
+        build_blockfrost_image(settings)
     info = generate_devnet(settings)
     started = time.time()
     compose(settings, "up", "--detach", "--remove-orphans")
@@ -842,7 +987,12 @@ def devnet_up(settings, detach=True, wait=False):
     if wait:
         wait_for_healthy(
             settings,
-            [s for s, on in (("kuber", settings.kuber), ("db-sync", settings.dbsync), ("koios", settings.koios)) if on],
+            [
+                s for s, on in (
+                    ("kuber", settings.kuber), ("db-sync", settings.dbsync), ("koios", settings.koios),
+                    ("blockfrost", settings.blockfrost),
+                ) if on
+            ],
         )
     print_summary(settings, info, tip)
     if detach:

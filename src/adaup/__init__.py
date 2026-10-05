@@ -120,11 +120,11 @@ def main():
     # Devnet command
     parser_devnet = subparsers.add_parser(
         "devnet",
-        help="Run a local devnet (use --docker for the docker stack with kuber and db-sync)",
+        help="Run a local devnet (use --docker for the docker stack with kuber, db-sync, Koios and Blockfrost)",
         description=(
             "Run a local Conway devnet. With --docker the node, kuber, db-sync, postgres and an "
-            "anchor file server run in docker; most options can also be set through the "
-            "ADAUP_DEVNET_* environment variable of the same name."
+            "anchor file server run in docker, optionally with Koios and blockfrost-ryo; most options "
+            "can also be set through the ADAUP_DEVNET_* environment variable of the same name."
         ),
     )
     parser_devnet.add_argument(
@@ -150,9 +150,12 @@ def main():
                                help="Do not start db-sync and postgres")
     parser_devnet.add_argument("--koios", dest="koios", action="store_const", const=True, default=None,
                                help="Also start Koios (gRest over the db-sync database) on port 8053")
+    parser_devnet.add_argument("--blockfrost", dest="blockfrost", action="store_const", const=True, default=None,
+                               help="Also start blockfrost-ryo (with a db-sync of its own) on port 8054")
     parser_devnet.add_argument("-d", "--detach", action="store_true",
                                help="Return once the node produces blocks instead of following the logs")
-    parser_devnet.add_argument("--wait", action="store_true", help="Also wait until kuber and db-sync are healthy")
+    parser_devnet.add_argument("--wait", action="store_true",
+                               help="Also wait until every enabled service (kuber, db-sync, Koios, Blockfrost) is healthy")
     parser_devnet.add_argument("--actions", default=None,
                                help="smoke: comma separated proposals to create (default: all of "
                                     "info,treasury,parameter,hardfork,no-confidence,committee,constitution)")
@@ -217,7 +220,7 @@ def run_devnet(args, parser):
         name: getattr(args, name)
         for name in (
             "dir", "slot_length", "epoch_length", "active_slots_coeff", "security_param",
-            "gov_action_lifetime", "drep_activity", "kuber", "dbsync", "koios",
+            "gov_action_lifetime", "drep_activity", "kuber", "dbsync", "koios", "blockfrost",
         )
     }
     try:

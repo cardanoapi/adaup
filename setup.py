@@ -3,13 +3,14 @@ import os
 
 setup(
     name='adaup',
-    version='0.4.0',
+    version='0.5.0',
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
     include_package_data=True,
     package_data={
         'adaup': ['assets/devnet/cardano-node/*', 'assets/devnet/docker/*',
                   'assets/devnet/docker/koios/*', 'assets/devnet/docker/koios/grest/*/*',
+                  'assets/devnet/docker/blockfrost/*',
                   'assets/devnet/docker/koios/grest/rpc/*/*'],
     },
     install_requires=[

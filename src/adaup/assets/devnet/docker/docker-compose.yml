@@ -266,6 +266,104 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  # ---------------------------------------------------------------------------
+  # Blockfrost (profile "blockfrost"): blockfrost-ryo over a db-sync of its own.
+  # ryo reads tx_out.address and tx_in, which the shared db-sync does not keep
+  # (Koios's SQL needs the address table), so this db-sync writes ryo's schema
+  # into a second Postgres. That Postgres is the pg_cardano image: ryo's pool
+  # detail query calls the extension.
+  # ---------------------------------------------------------------------------
+
+  postgres-blockfrost:
+    image: ${ADAUP_DEVNET_PG_CARDANO_IMAGE}
+    profiles: ["blockfrost"]
+    environment:
+      POSTGRES_USER: ${ADAUP_DEVNET_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${ADAUP_DEVNET_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${ADAUP_DEVNET_POSTGRES_DB}
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB", "-c", "fsync=off", "-c", "synchronous_commit=off"]
+    shm_size: 256m
+    volumes:
+      - blockfrost-pgdata:/var/lib/postgresql/data
+      - ${ADAUP_DEVNET_DIR}/blockfrost/initdb.sql:/docker-entrypoint-initdb.d/blockfrost.sql:ro
+    ports:
+      - "${ADAUP_DEVNET_BIND}:${ADAUP_DEVNET_BLOCKFROST_POSTGRES_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    restart: unless-stopped
+    logging: *logging
+
+  db-sync-blockfrost:
+    image: ${ADAUP_DEVNET_DBSYNC_IMAGE}
+    profiles: ["blockfrost"]
+    platform: linux/amd64
+    environment:
+      POSTGRES_HOST: postgres-blockfrost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${ADAUP_DEVNET_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${ADAUP_DEVNET_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${ADAUP_DEVNET_POSTGRES_DB}
+      PGPASSWORD: ${ADAUP_DEVNET_POSTGRES_PASSWORD}
+    # Same flags as db-sync; only the config (and so the schema) differs.
+    command:
+      - --config=/config/db-sync-blockfrost-config.json
+      - --socket-path=/node-ipc/node.socket
+      - --force-indexes
+      - --allow-private-offchain-urls
+    volumes:
+      - config:/config:ro
+      - ipc:/node-ipc
+      - blockfrost-dbsync-state:/var/lib/cexplorer
+    depends_on:
+      cardano-node:
+        condition: service_healthy
+      postgres-blockfrost:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test "$$(psql -h postgres-blockfrost -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -tAc
+          'select 1 from block where block_no is not null limit 1')" = 1
+      interval: 3s
+      timeout: 5s
+      retries: 100
+      start_period: 10s
+    stop_grace_period: 20s
+    restart: unless-stopped
+    logging: *logging
+
+  blockfrost:
+    image: ${ADAUP_DEVNET_BLOCKFROST_IMAGE}
+    profiles: ["blockfrost"]
+    environment:
+      # production.json and the genesis summaries adaup writes for this devnet.
+      NODE_CONFIG_DIR: /blockfrost
+      BLOCKFROST_CONFIG_DBSYNC_PASSWORD: ${ADAUP_DEVNET_POSTGRES_PASSWORD}
+    volumes:
+      - ${ADAUP_DEVNET_DIR}/blockfrost:/blockfrost:ro
+    ports:
+      - "${ADAUP_DEVNET_BIND}:${ADAUP_DEVNET_BLOCKFROST_PORT}:3000"
+    depends_on:
+      db-sync-blockfrost:
+        condition: service_healthy
+    healthcheck:
+      # /health answers without the database; the latest block needs db-sync.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/blocks/latest').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 3s
+      timeout: 5s
+      retries: 100
+      start_period: 5s
+    restart: unless-stopped
+    logging: *logging
+
 networks:
   default:
     name: ${ADAUP_DEVNET_NETWORK}
@@ -281,3 +379,7 @@ volumes:
     name: ${ADAUP_DEVNET_NETWORK}-pgdata
   dbsync-state:
     name: ${ADAUP_DEVNET_NETWORK}-dbsync-state
+  blockfrost-pgdata:
+    name: ${ADAUP_DEVNET_NETWORK}-blockfrost-pgdata
+  blockfrost-dbsync-state:
+    name: ${ADAUP_DEVNET_NETWORK}-blockfrost-dbsync-state

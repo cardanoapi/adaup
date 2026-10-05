@@ -51,6 +51,8 @@ cardano devnet smoke --docker          # register DReps, submit and vote on ever
 cardano devnet down --docker
 ```
 
+`--koios` adds the Koios API (port 8053) and `--blockfrost` the Blockfrost API (blockfrost-ryo, port 8054, whole-second slots) over the same chain.
+
 Keys (faucet, pool, committee), configuration and the rendered `docker-compose.yml` are written to `~/.cardano/devnet-docker`. Options, `ADAUP_DEVNET_*` variables and how to attach other compose projects: [Docker Devnet Guide](docs/devnet-docker.md).
 
 ### Running Cardano CLI Commands
@@ -66,7 +68,7 @@ cardano cli query tip --testnet-magic=2 --socket-path=~/.cardano/preview/node.so
 ## Additional Guides
 
 - Hydra cluster setup and operations: [Hydra Guide](docs/hydra.md)
-- Docker devnet with kuber and db-sync: [Docker Devnet Guide](docs/devnet-docker.md)
+- Docker devnet with kuber, db-sync, Koios and Blockfrost: [Docker Devnet Guide](docs/devnet-docker.md)
 
 ## Binary Sources
 

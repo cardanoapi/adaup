@@ -2,8 +2,9 @@
 
 `cardano devnet --docker` runs an isolated Conway devnet in docker: one block-producing
 `cardano-node` with full on-chain governance (protocol version 10), `kuber`, `cardano-db-sync`
-with `postgres`, and a small HTTP server for governance anchors. The host needs only docker with
-the compose plugin; every `cardano-cli` call runs inside the node image.
+with `postgres`, and a small HTTP server for governance anchors. The Koios and Blockfrost APIs
+can be added over the same chain. The host needs only docker with the compose plugin; every
+`cardano-cli` call runs inside the node image.
 
 Genesis is regenerated on every `up` (`systemStart` = now), so the node database, db-sync state
 and postgres volumes are recreated too.
@@ -12,7 +13,10 @@ and postgres volumes are recreated too.
 
 ```bash
 cardano devnet up --docker -d            # start, return once blocks are produced
-cardano devnet up --docker -d --wait     # ... and wait until kuber and db-sync are healthy
+cardano devnet up --docker -d --wait     # ... and wait until every enabled service is healthy
+cardano devnet up --docker -d --wait --koios                        # plus Koios on :8053
+cardano devnet up --docker -d --wait --blockfrost --slot-length 1 \
+  --active-slots-coeff 1 --epoch-length 60                          # plus Blockfrost on :8054
 cardano devnet up --docker               # start and follow logs; Ctrl+C removes the devnet
 cardano devnet status --docker
 cardano devnet smoke --docker            # governance smoke test / seeder, see below
@@ -21,7 +25,7 @@ cardano devnet down --docker             # remove containers, volumes and networ
 
 `up` options: `--dir`, `--slot-length`, `--epoch-length`, `--active-slots-coeff`,
 `--security-param`, `--gov-action-lifetime`, `--drep-activity`, `--no-kuber`, `--no-dbsync`,
-`--koios`, `-d/--detach`, `--wait`. Pass the same `--dir` to every command when not using the default.
+`--koios`, `--blockfrost`, `-d/--detach`, `--wait`. Pass the same `--dir` to every command when not using the default.
 
 ## Environment
 
@@ -43,12 +47,14 @@ Command line flags win over environment variables, which win over the defaults.
 | `ADAUP_DEVNET_KEY_DEPOSIT_ADA` / `_POOL_DEPOSIT_ADA` | `2` / `500` |
 | `ADAUP_DEVNET_COMMITTEE_SIZE` / `_THRESHOLD` / `_MIN_SIZE` / `_MAX_TERM` | `3` / `2/3` / `0` / `10000` epochs |
 | `ADAUP_DEVNET_FAUCET_ADA` / `_POOL_STAKE_ADA` | `500000000` / `50000000` |
-| `ADAUP_DEVNET_KUBER` / `_DBSYNC` / `_KOIOS` | `1` / `1` / `0` |
+| `ADAUP_DEVNET_KUBER` / `_DBSYNC` / `_KOIOS` / `_BLOCKFROST` | `1` / `1` / `0` / `0` |
 | `ADAUP_DEVNET_BIND` | `127.0.0.1` (host interface for published ports) |
 | `ADAUP_DEVNET_KUBER_PORT` / `_POSTGRES_PORT` / `_ANCHOR_PORT` / `_KOIOS_PORT` | `8081` / `5433` / `8090` / `8053` |
+| `ADAUP_DEVNET_BLOCKFROST_PORT` / `_BLOCKFROST_POSTGRES_PORT` | `8054` / `5434` |
 | `ADAUP_DEVNET_POSTGRES_USER` / `_PASSWORD` / `_DB` | `postgres` / `postgres` / `cexplorer` |
 | `ADAUP_DEVNET_NODE_IMAGE` / `_KUBER_IMAGE` / `_DBSYNC_IMAGE` / `_POSTGRES_IMAGE` | see `devnet_docker.py` |
 | `ADAUP_DEVNET_KOIOS_POSTGRES_BASE` / `_POSTGREST_IMAGE` / `_KOIOS_PROXY_IMAGE` | `postgres:17-bookworm` / `postgrest/postgrest:v14.10` / `nginx:1.27-alpine` |
+| `ADAUP_DEVNET_BLOCKFROST_IMAGE` | empty: build blockfrost-ryo 6.8.0 from source |
 | `ADAUP_DEVNET_TIMEOUT` | `600` seconds for each wait |
 | `ADAUP_DEVNET_IPFS_GATEWAYS` | empty (db-sync's default); comma-separated gateways for db-sync's `ipfs_gateway` |
 
@@ -67,11 +73,13 @@ thresholds are the mainnet ones. Genesis hashes are written into `config/cardano
 docker-compose.yml, .env    rendered stack; plain `docker compose` works from here
 devnet.json                 summary: addresses, pool id, committee hashes, ports, credentials
 config/                     cardano-node.json, topology.json, *-genesis.json, db-sync-config.json
+                            (and db-sync-blockfrost-config.json with --blockfrost)
 keys/faucet/                payment.{skey,vkey,addr}: funded enterprise address
 keys/pool/                  cold, vrf, kes, opcert, byron delegate keys; pool.id
 keys/pool-delegator/        payment and staking keys holding the pool's stake
 keys/committee/ccN/         cc.cold.{skey,vkey}, cc.hot.{skey,vkey}
 anchors/                    files served at http://anchors:8080/<name>
+blockfrost/                 with --blockfrost: ryo's production.json, genesis/ and initdb.sql
 smoke/                      smoke test wallets, DReps, transactions and result.json
 ```
 
@@ -110,6 +118,50 @@ empty.
 
 The gRest SQL is CC BY 4.0 (`assets/devnet/docker/koios/NOTICE`).
 
+## Blockfrost
+
+`--blockfrost` (or `ADAUP_DEVNET_BLOCKFROST=1`) also serves the devnet through the
+[Blockfrost](https://blockfrost.io) API, at `http://127.0.0.1:8054` (`http://blockfrost:3000` in the
+network), so software written against Blockfrost can be tried on a chain you control. It is
+[blockfrost-ryo](https://github.com/blockfrost/blockfrost-backend-ryo) 6.8.0, the same release as
+hosted Blockfrost when it was added. Routes have no `/api/v0` prefix and need no `project_id`.
+
+```bash
+cardano devnet up --docker -d --wait --blockfrost --slot-length 1 --active-slots-coeff 1 --epoch-length 60
+curl http://127.0.0.1:8054/governance/committee
+```
+
+**Whole-second slots.** Blockfrost's schema types `slot_length` in `/genesis` and `/network/eras` as
+an integer, and ryo serialises through it, so the default 0.2 s slot would be served as `0`.
+`--blockfrost` refuses a fractional `--slot-length`. With 1 s slots, `--active-slots-coeff 1` makes
+every slot a block and `--epoch-length 60` keeps 60 s epochs (`4k/f` = 40 slots).
+
+Three services run under the `blockfrost` profile:
+
+| Service | Does |
+| --- | --- |
+| `db-sync-blockfrost` | A second db-sync, with the `tx_out` layout ryo's SQL reads (below). |
+| `postgres-blockfrost` | Its database (`127.0.0.1:5434`): the pg_cardano image the Koios profile builds, plus the `safe_verify_cip88_pool_key_registration` wrapper ryo's README asks for. `/pools/{pool_id}` calls both, even on a chain with no Calidus keys. |
+| `blockfrost` | ryo, configured for network `custom` with genesis summaries written from this devnet's genesis. The token registry and Mithril are off. |
+
+**Why a second db-sync.** ryo selects `tx_out.address`, `address_has_script` and `payment_cred`,
+joins `tx_in` for spent outputs and reads `tx_out.consumed_by_tx_id`. The shared db-sync runs with the
+address table, which removes those columns and which Koios's SQL needs, and in `consumed` mode it
+leaves `tx_in` empty. So `db-sync-blockfrost` uses `tx_out.value: consumed`, `force_tx_in: true` and
+`use_address_table: false`, and the shared database keeps the same shape with or without
+`--blockfrost`. db-sync, Koios and Blockfrost can run side by side on one chain. `--blockfrost` also
+works with `--no-dbsync`.
+
+The first `up --blockfrost` builds the ryo image (`blockfrost/Dockerfile`: the release commit is
+fetched by hash and checked, dependencies come from its `yarn.lock`), which takes a few minutes and
+needs the network. Blockfrost only publishes amd64 images, and not for every release.
+`ADAUP_DEVNET_BLOCKFROST_IMAGE` skips the build and runs an image of your own; it is started with
+`NODE_CONFIG_DIR=/blockfrost`, where adaup mounts the generated configuration.
+
+Not served by ryo: `/tx/submit` (submit through kuber or the node) and the asset registry
+(off-chain token metadata is `null`). On a fresh chain ryo's `/pools/{pool_id}` answers 500
+(division by zero) until the first stake snapshot is active, about three epochs after `up`.
+
 ## db-sync configuration
 
 `config/db-sync-config.json` is db-sync's `insert_options` with `tx_out.value: consumed`,
@@ -121,13 +173,16 @@ without `--koios`, so the database is the same shape either way. With the addres
 
 ## Joining the stack from another compose project
 
-Everything runs on the docker network `adaup-devnet` with these service names (`koios` only with `--koios`):
+Everything runs on the docker network `adaup-devnet` with these service names (`koios` only with `--koios`,
+`blockfrost` only with `--blockfrost`):
 
 - `cardano-node`: node-to-node port 3001; socket at `/ipc/node.socket` in volume `adaup-devnet-ipc`
 - `kuber`: `http://kuber:8081` (host `127.0.0.1:8081`)
 - `postgres`: `postgres:5432`, database `cexplorer` (host `127.0.0.1:5433`)
 - `db-sync`: fills `postgres`
 - `anchors`: `http://anchors:8080` (host `127.0.0.1:8090`)
+- `koios`: `http://koios/api/v1` (host `127.0.0.1:8053`)
+- `blockfrost`: `http://blockfrost:3000` (host `127.0.0.1:8054`), its db-sync in `postgres-blockfrost:5432`
 
 Node and genesis configuration is also in volume `adaup-devnet-config`.
 
